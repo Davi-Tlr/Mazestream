@@ -135,7 +135,7 @@ No fluxo com `--use-caddy`, o script:
 
 ## Arquivos sensíveis
 
-`livekit.yaml` e `.env` podem conter credenciais.
+`livekit.yaml` e `.env` guardam credenciais.
 
 O `.gitignore` do projeto já inclui:
 
@@ -146,7 +146,7 @@ livekit.yaml
 .env.production
 ```
 
-Antes de publicar o repositório, confirme que nenhum arquivo com credenciais reais entrou no histórico do Git.
+Antes de compartilhar o projeto, confirme que nenhum arquivo com credenciais reais foi enviado junto.
 
 ## Documentação
 
