@@ -1,0 +1,49 @@
+# LiveKit Server + Redis, com frontend e relay opcionais.
+# O servico LiveKit usa network_mode: "host" para o fluxo WebRTC deste projeto.
+# Este Compose e destinado a servidor Linux.
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  livekit:
+    image: livekit/livekit-server:latest
+    command: --config /etc/livekit.yaml
+    restart: unless-stopped
+    network_mode: "host"
+    logging: *default-logging
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    network_mode: "host"
+    logging: *default-logging
+    command: redis-server --bind 127.0.0.1 --protected-mode yes
+
+  frontend:
+    profiles: ["web"]
+    build: ./frontend
+    restart: unless-stopped
+    logging: *default-logging
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:-}
+      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-}
+      - PUBLIC_WSS_URL=${PUBLIC_WSS_URL:-}
+
+  discord-relay:
+    profiles: ["discord"]
+    build: ./discord-relay
+    restart: unless-stopped
+    logging: *default-logging
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-}
+      - PUBLIC_URL=${PUBLIC_URL:-}

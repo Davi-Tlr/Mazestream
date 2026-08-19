@@ -1,0 +1,11 @@
+# Arquivos gerados com credenciais
+livekit.yaml
+.env
+.env.local
+.env.production
+
+# Dados locais
+dump.rdb
+
+# Logs
+*.log
