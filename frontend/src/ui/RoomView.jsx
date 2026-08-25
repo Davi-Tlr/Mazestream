@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo, useCallback, memo } from "react";
 import { LayoutGroup, AnimatePresence, motion } from "framer-motion";
 import { Button, Drawer, Switch, Select, Segmented, Input, Tag, Empty, Tooltip } from "antd";
 import {
@@ -9,20 +9,20 @@ import {
 } from "@ant-design/icons";
 import VideoTile from "./VideoTile.jsx";
 import AudioSink from "./AudioSink.jsx";
-import { Sol, Lua } from "./icons.jsx";
-import { useTema } from "../tema.jsx";
-import { fmtDuracao } from "../estado.js";
+import { Sun, Moon } from "./icons.jsx";
+import { useTheme } from "../theme.jsx";
+import { fmtDuration } from "../state.js";
 import { volumeKey } from "../collect.js";
-import { OPCOES_ENVIO, OPCOES_RECEBER, MAX_TELAS, QUALIDADE_PT } from "../constants.js";
+import { SEND_OPTIONS, RECEIVE_OPTIONS, MAX_SCREENS, QUALITY_LABELS } from "../constants.js";
 
-const STATUS = {
+const STATUS_MAP = {
   idle: ["Conectando", "reconectando"], connecting: ["Conectando", "reconectando"],
   connected: ["Conectado", "conectado"], reconnecting: ["Reconectando", "reconectando"],
   disconnected: ["Desconectado", "desconectado"]
 };
-const COR_QUALIDADE = { excellent: "success", good: "green", poor: "warning", lost: "error", unknown: "default" };
+const QUALITY_COLOR = { excellent: "success", good: "green", poor: "warning", lost: "error", unknown: "default" };
 
-function Toque({ children }) {
+function Touch({ children }) {
   return (
     <motion.span style={{ display: "inline-flex" }} whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.92 }}>
       {children}
@@ -30,258 +30,285 @@ function Toque({ children }) {
   );
 }
 
+const LiveTimer = memo(function LiveTimer({ desde, estado }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (estado !== "ao_vivo") return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [estado]);
+  if (estado !== "ao_vivo" || !desde) return null;
+  return <span className="live-pill live"><span className="pulse" /> AO VIVO · {fmtDuration(now - desde)}</span>;
+});
+
+const MemoTile = memo(function MemoTile({ tile, destaque, agora, onSelect, mostrarVolume, volume, onVolume, onMute, onParar }) {
+  return (
+    <VideoTile
+      tile={tile}
+      destaque={destaque}
+      agora={agora}
+      onSelect={onSelect}
+      mostrarVolume={mostrarVolume}
+      volume={volume}
+      onVolume={onVolume}
+      onMute={onMute}
+      onParar={onParar}
+    />
+  );
+});
+
 export default function RoomView(props) {
   const {
-    tiles, audios, pessoas, qtdTelas, connState,
-    selecionado, setSelecionado, volumes, setVolumes,
-    ajustes, setAjustes, micLigado, camLigada,
-    salaAtual, meuEstado,
-    onCompartilhar, onPararTransmissao, onPararTudo,
-    onPausarLive, onRetomarLive, onTituloLive, onCopiarLink,
-    onAlternarMic, onAlternarCam, onSair
+    tiles, audios, people, screenCount, totalScreenCount, connState,
+    selected, setSelected, volumes, setVolumes,
+    settings, setSettings, micOn, camOn,
+    currentRoom, myState,
+    onShare, onStopBroadcast, onStopAll,
+    onPauseLive, onResumeLive, onLiveTitle, onCopyLink,
+    onToggleMic, onToggleCam, onLeave
   } = props;
 
-  const [conexoesAberto, setConexoesAberto] = useState(false);
-  const [ajustesAberto, setAjustesAberto] = useState(false);
-  const [modo, setModo] = useState("padrao");
-  const [agora, setAgora] = useState(Date.now());
-  const [tituloLocal, setTituloLocal] = useState(meuEstado ? meuEstado.titulo : "");
-  const salaRef = useRef(null);
-  const tema = useTema();
+  const [connectionsOpen, setConnectionsOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [layoutMode, setLayoutMode] = useState("default");
+  const [titleLocal, setTitleLocal] = useState(myState ? myState.titulo : "");
+  const roomRef = useRef(null);
+  const theme = useTheme();
 
-  // Cronometro da live: 1 tick por segundo (barato, so quando montado).
+  // Drawer-only timer — does NOT cause re-renders on tiles.
+  const [nowDrawer, setNowDrawer] = useState(Date.now());
   useEffect(() => {
-    const id = setInterval(() => setAgora(Date.now()), 1000);
+    const id = setInterval(() => setNowDrawer(Date.now()), 1000);
     return () => clearInterval(id);
   }, []);
-  // Sincroniza o campo de titulo quando a metadata muda por fora.
-  useEffect(() => { setTituloLocal(meuEstado ? meuEstado.titulo : ""); }, [meuEstado && meuEstado.titulo]);
 
-  const transmitindo = meuEstado && (meuEstado.estado === "ao_vivo" || meuEstado.estado === "pausado");
+  useEffect(() => { setTitleLocal(myState ? myState.titulo : ""); }, [myState && myState.titulo]);
 
-  // Tela cheia do PC (nativa) fica em sincronia com o modo.
+  const isLive = myState && (myState.estado === "ao_vivo" || myState.estado === "pausado");
+
   useEffect(() => {
     function onFs() {
       if (!document.fullscreenElement) {
-        setModo((m) => (m === "cheia-pc" ? "padrao" : m));
+        setLayoutMode((m) => (m === "fullscreen-pc" ? "default" : m));
       }
     }
     document.addEventListener("fullscreenchange", onFs);
     return () => document.removeEventListener("fullscreenchange", onFs);
   }, []);
 
-  async function irCheiaPC() {
+  async function goFullscreen() {
     try {
-      if (document.fullscreenElement) { await document.exitFullscreen(); setModo("padrao"); return; }
-      if (salaRef.current && salaRef.current.requestFullscreen) {
-        await salaRef.current.requestFullscreen();
-        setModo("cheia-pc");
+      if (document.fullscreenElement) { await document.exitFullscreen(); setLayoutMode("default"); return; }
+      if (roomRef.current && roomRef.current.requestFullscreen) {
+        await roomRef.current.requestFullscreen();
+        setLayoutMode("fullscreen-pc");
       }
     } catch (e) {}
   }
-  function trocarModo(m) {
-    if (m === "cheia-pc") { irCheiaPC(); return; }
+  function switchMode(m) {
+    if (m === "fullscreen-pc") { goFullscreen(); return; }
     if (document.fullscreenElement) { document.exitFullscreen().catch(() => {}); }
-    setModo(m);
+    setLayoutMode(m);
   }
 
-  // Atalhos: f (tela cheia PC), t (teatro), m (mudo geral), esc (volta ao padrao).
   useEffect(() => {
     function onKey(e) {
-      const alvo = e.target;
-      if (alvo && (alvo.tagName === "INPUT" || alvo.tagName === "TEXTAREA" || alvo.isContentEditable)) return;
+      const el = e.target;
+      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
       const k = e.key.toLowerCase();
-      if (k === "f") { e.preventDefault(); irCheiaPC(); }
-      else if (k === "t") { e.preventDefault(); trocarModo(modo === "teatro" ? "padrao" : "teatro"); }
-      else if (k === "m") { e.preventDefault(); setAjustes((a) => ({ ...a, silenciarTudo: !a.silenciarTudo })); }
-      else if (k === "escape") { if (!document.fullscreenElement && modo !== "padrao") setModo("padrao"); }
+      if (k === "f") { e.preventDefault(); goFullscreen(); }
+      else if (k === "t") { e.preventDefault(); switchMode(layoutMode === "theater" ? "default" : "theater"); }
+      else if (k === "m") { e.preventDefault(); setSettings((s) => ({ ...s, muteAll: !s.muteAll })); }
+      else if (k === "escape") { if (!document.fullscreenElement && layoutMode !== "default") setLayoutMode("default"); }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [modo, setAjustes]);
+  }, [layoutMode, setSettings]);
 
-  const chaves = tiles.map((t) => t.key);
-  let selKey = selecionado && chaves.includes(selecionado) ? selecionado : null;
-  if (!selKey) {
-    const tela = tiles.find((t) => t.ehTela);
-    selKey = tela ? tela.key : (tiles[0] ? tiles[0].key : null);
-  }
-  const selTile = tiles.find((t) => t.key === selKey) || null;
-  const outros = tiles.filter((t) => t.key !== selKey);
+  const { selTile, others } = useMemo(() => {
+    let selKey = selected && tiles.some((t) => t.key === selected) ? selected : null;
+    if (!selKey) {
+      const screen = tiles.find((t) => t.isScreen);
+      selKey = screen ? screen.key : (tiles[0] ? tiles[0].key : null);
+    }
+    const sel = tiles.find((t) => t.key === selKey) || null;
+    const out = sel ? tiles.filter((t) => t.key !== selKey) : tiles;
+    return { selTile: sel, others: out };
+  }, [tiles, selected]);
 
-  function volAtual(key) { return volumes[key] || { value: 100, muted: !!ajustes.iniciarMutado }; }
-  function definirVol(key, pct) { setVolumes((p) => ({ ...p, [key]: { value: pct, muted: false } })); }
-  function alternarMudo(key) {
-    const cur = volAtual(key);
-    setVolumes((p) => ({ ...p, [key]: { value: cur.value, muted: !cur.muted } }));
-  }
+  const volCurrent = useCallback((key) => volumes[key] || { value: 100, muted: !!settings.startMuted }, [volumes, settings.startMuted]);
+  const setVol = useCallback((key, pct) => setVolumes((p) => ({ ...p, [key]: { value: pct, muted: false } })), []);
+  const toggleMute = useCallback((key) => {
+    setVolumes((p) => {
+      const cur = p[key] || { value: 100, muted: false };
+      return { ...p, [key]: { value: cur.value, muted: !cur.muted } };
+    });
+  }, []);
 
-  function renderTile(tile, ehDestaque) {
-    const chaveVol = volumeKey(tile.sid, tile.pubName);
+  const renderTile = useCallback((tile, ehDestaque) => {
+    const volKey = volumeKey(tile.sid, tile.pubName);
     return (
-      <VideoTile
+      <MemoTile
         key={tile.key}
         tile={tile}
         destaque={ehDestaque}
-        agora={agora}
-        onSelect={setSelecionado}
-        mostrarVolume={ehDestaque && tile.ehTela && !tile.ehLocal}
-        volume={volAtual(chaveVol)}
-        onVolume={(v) => definirVol(chaveVol, v)}
-        onMute={() => alternarMudo(chaveVol)}
-        onParar={onPararTransmissao}
+        agora={0}
+        onSelect={setSelected}
+        mostrarVolume={ehDestaque && tile.isScreen && !tile.isLocal}
+        volume={volCurrent(volKey)}
+        onVolume={(v) => setVol(volKey, v)}
+        onMute={() => toggleMute(volKey)}
+        onParar={onStopBroadcast}
       />
     );
-  }
+  }, [setSelected, volCurrent, setVol, toggleMute, onStopBroadcast]);
 
-  const [statusTexto, statusClasse] = STATUS[connState] || STATUS.connecting;
+  const [statusText, statusClass] = STATUS_MAP[connState] || STATUS_MAP.connecting;
 
-  const modoBtns = [
-    { m: "padrao", ic: <AppstoreOutlined />, t: "Padrão (lado a lado)" },
-    { m: "teatro", ic: <PicCenterOutlined />, t: "Teatro (miniaturas embaixo)" },
-    { m: "cheia-app", ic: <ExpandOutlined />, t: "Tela cheia do app" },
-    { m: "cheia-pc", ic: <FullscreenOutlined />, t: "Tela cheia do PC (F)" }
+  const layoutBtns = [
+    { m: "default", ic: <AppstoreOutlined />, t: "Padrao (lado a lado)" },
+    { m: "theater", ic: <PicCenterOutlined />, t: "Teatro (miniaturas embaixo)" },
+    { m: "fullscreen-app", ic: <ExpandOutlined />, t: "Tela cheia do app" },
+    { m: "fullscreen-pc", ic: <FullscreenOutlined />, t: "Tela cheia do PC (F)" }
   ];
 
   return (
-    <div className="sala" data-modo={modo} ref={salaRef}>
-      <header className="topo">
-        <div className="marca">Mazestream</div>
-        <div className="sala-destino">
-          {meuEstado && meuEstado.estado === "ao_vivo" && (
-            <span className="live-pill ao-vivo"><span className="pt" /> AO VIVO · {fmtDuracao(agora - meuEstado.desde)}</span>
+    <div className="room" data-mode={layoutMode} ref={roomRef}>
+      <header className="header">
+        <div className="brand">Mazestream</div>
+        <div className="room-info">
+          <LiveTimer desde={myState && myState.desde} estado={myState && myState.estado} />
+          {myState && myState.estado === "pausado" && (
+            <span className="live-pill paused"><PauseOutlined /> EM PAUSA</span>
           )}
-          {meuEstado && meuEstado.estado === "pausado" && (
-            <span className="live-pill pausado"><PauseOutlined /> EM PAUSA</span>
-          )}
-          <span className="viewers"><TeamOutlined /> {pessoas.length}</span>
-          <b>{qtdTelas} ao vivo</b>
+          <span className="viewers"><TeamOutlined /> {people.length}</span>
+          <b>{(totalScreenCount !== undefined ? totalScreenCount : screenCount)} ao vivo</b>
         </div>
       </header>
 
-      <div className="meio">
+      <div className="content">
         <LayoutGroup>
           <main className="stage">
             {selTile ? renderTile(selTile, true) : (
               <div className="tile destaque" style={{ cursor: "default" }}>
-                <div className="tile-vazio">
+                <div className="tile-empty">
                   <div><strong>Nada sendo compartilhado</strong>
-                    <span>Clique em Compartilhar tela pra começar.</span></div>
+                    <span>Clique em Compartilhar tela pra comecar.</span></div>
                 </div>
               </div>
             )}
           </main>
           <aside className="rail">
-            {outros.length === 0 && selTile && <div className="rail-vazio">Só esta transmissão por enquanto.</div>}
-            <AnimatePresence>{outros.map((t) => renderTile(t, false))}</AnimatePresence>
+            {others.length === 0 && selTile && <div className="rail-empty">So esta transmissao por enquanto.</div>}
+            <AnimatePresence>{others.map((t) => renderTile(t, false))}</AnimatePresence>
           </aside>
         </LayoutGroup>
       </div>
 
       {audios.map((a) => (
         <AudioSink key={a.key} track={a.track}
-          volume={volAtual(volumeKey(a.sid, a.pubName))} muteAll={ajustes.silenciarTudo} />
+          volume={volCurrent(volumeKey(a.sid, a.pubName))} muteAll={settings.muteAll} />
       ))}
 
-      <div className="barra">
-        <Toque><Button type="primary" icon={<DesktopOutlined />} disabled={qtdTelas >= MAX_TELAS} onClick={onCompartilhar}>
-          {qtdTelas === 0 ? "Compartilhar tela" : (qtdTelas === 1 ? "Compartilhar outra" : "Limite atingido")}
-        </Button></Toque>
-        <Toque><Button icon={<StopOutlined />} danger disabled={qtdTelas === 0} onClick={onPararTudo}>
-          {qtdTelas > 1 ? "Parar tudo" : "Parar"}
-        </Button></Toque>
-        {qtdTelas > 0 && (meuEstado && meuEstado.estado === "pausado"
-          ? <Toque><Button icon={<CaretRightOutlined />} type="primary" onClick={onRetomarLive}>Retomar</Button></Toque>
-          : <Toque><Button icon={<PauseOutlined />} onClick={onPausarLive}>Pausar</Button></Toque>)}
-        <Toque><Button icon={micLigado ? <AudioOutlined /> : <AudioMutedOutlined />} type={micLigado ? "primary" : "default"} onClick={onAlternarMic}>Microfone</Button></Toque>
-        <Toque><Button icon={<VideoCameraOutlined />} type={camLigada ? "primary" : "default"} onClick={onAlternarCam}>Câmera</Button></Toque>
+      <div className="toolbar">
+        <Touch><Button type="primary" icon={<DesktopOutlined />} disabled={screenCount >= MAX_SCREENS} onClick={onShare}>
+          {screenCount === 0 ? "Compartilhar tela" : (screenCount === 1 ? "Compartilhar outra" : "Limite atingido")}
+        </Button></Touch>
+        <Touch><Button icon={<StopOutlined />} danger disabled={screenCount === 0} onClick={onStopAll}>
+          {screenCount > 1 ? "Parar tudo" : "Parar"}
+        </Button></Touch>
+        {screenCount > 0 && (myState && myState.estado === "pausado"
+          ? <Touch><Button icon={<CaretRightOutlined />} type="primary" onClick={onResumeLive}>Retomar</Button></Touch>
+          : <Touch><Button icon={<PauseOutlined />} onClick={onPauseLive}>Pausar</Button></Touch>)}
+        <Touch><Button icon={micOn ? <AudioOutlined /> : <AudioMutedOutlined />} type={micOn ? "primary" : "default"} onClick={onToggleMic}>Microfone</Button></Touch>
+        <Touch><Button icon={<VideoCameraOutlined />} type={camOn ? "primary" : "default"} onClick={onToggleCam}>Camera</Button></Touch>
 
-        <span className="espaco" />
+        <span className="spacer" />
 
-        <span className="modos">
-          {modoBtns.map((b) => (
-            <Toque key={b.m}>
+        <span className="modes">
+          {layoutBtns.map((b) => (
+            <Touch key={b.m}>
               <Tooltip title={b.t}>
-                <Button type={modo === b.m ? "primary" : "default"} icon={b.ic} aria-label={b.t} onClick={() => trocarModo(b.m)} />
+                <Button type={layoutMode === b.m ? "primary" : "default"} icon={b.ic} aria-label={b.t} onClick={() => switchMode(b.m)} />
               </Tooltip>
-            </Toque>
+            </Touch>
           ))}
         </span>
 
-        <span className={"status " + statusClasse}>{statusTexto}</span>
-        <Toque>
-          <Tooltip title={tema.escuro ? "Tema claro" : "Tema escuro"}>
-            <Button className="tema-btn" aria-label="Alternar tema"
-              icon={tema.escuro ? <Sol /> : <Lua />} onClick={tema.alternar} />
+        <span className={"status " + statusClass}>{statusText}</span>
+        <Touch>
+          <Tooltip title={theme.dark ? "Tema claro" : "Tema escuro"}>
+            <Button className="theme-btn" aria-label="Alternar tema"
+              icon={theme.dark ? <Sun /> : <Moon />} onClick={theme.toggle} />
           </Tooltip>
-        </Toque>
-        <Toque><Tooltip title="Copiar link da sala"><Button icon={<LinkOutlined />} onClick={onCopiarLink}>Convidar</Button></Tooltip></Toque>
-        <Toque><Button icon={<SettingOutlined />} onClick={() => setAjustesAberto(true)}>Ajustes</Button></Toque>
-        <Toque><Button icon={<TeamOutlined />} onClick={() => setConexoesAberto(true)}>Conexões</Button></Toque>
-        <Toque><Button icon={<LogoutOutlined />} onClick={onSair}>Sair</Button></Toque>
+        </Touch>
+        <Touch><Tooltip title="Copiar link da sala"><Button icon={<LinkOutlined />} onClick={onCopyLink}>Convidar</Button></Tooltip></Touch>
+        <Touch><Button icon={<SettingOutlined />} onClick={() => setSettingsOpen(true)}>Ajustes</Button></Touch>
+        <Touch><Button icon={<TeamOutlined />} onClick={() => setConnectionsOpen(true)}>Conexoes</Button></Touch>
+        <Touch><Button icon={<LogoutOutlined />} onClick={onLeave}>Sair</Button></Touch>
       </div>
 
-      <Drawer title="Conexão dos participantes" placement="right" open={conexoesAberto} onClose={() => setConexoesAberto(false)} width={320}>
-        {pessoas.length === 0 && <Empty description="Ninguém por aqui" />}
-        {pessoas.map((p) => (
-          <div className="pessoa" key={p.key}>
-            <span>{p.nome}</span>
-            <Tag color={COR_QUALIDADE[p.quality] || "default"} style={{ marginInlineEnd: 0 }}>{QUALIDADE_PT[p.quality] || "..."}</Tag>
+      <Drawer title="Conexao dos participantes" placement="right" open={connectionsOpen} onClose={() => setConnectionsOpen(false)} width={320}>
+        {people.length === 0 && <Empty description="Ninguem por aqui" />}
+        {people.map((p) => (
+          <div className="person" key={p.key}>
+            <span>{p.name}</span>
+            <Tag color={QUALITY_COLOR[p.quality] || "default"} style={{ marginInlineEnd: 0 }}>{QUALITY_LABELS[p.quality] || "..."}</Tag>
           </div>
         ))}
       </Drawer>
 
-      <Drawer title="Ajustes" placement="right" open={ajustesAberto} onClose={() => setAjustesAberto(false)} width={340}>
-        <div className="drawer-grupo">
-          <span className="drawer-titulo">Aparência</span>
-          <div className="drawer-linha"><span>Tema</span>
-            <Segmented value={tema.pref} onChange={(v) => tema.definir(v)}
+      <Drawer title="Ajustes" placement="right" open={settingsOpen} onClose={() => setSettingsOpen(false)} width={340}>
+        <div className="drawer-group">
+          <span className="drawer-title">Aparencia</span>
+          <div className="drawer-row"><span>Tema</span>
+            <Segmented value={theme.pref} onChange={(v) => theme.setPref(v)}
               options={[
                 { value: "auto", label: "Auto" },
                 { value: "claro", label: "Claro" },
                 { value: "escuro", label: "Escuro" }
               ]} /></div>
         </div>
-        <div className="drawer-grupo">
-          <span className="drawer-titulo">Sua transmissão</span>
-          <div className="drawer-linha" style={{ display: "block" }}>
-            <span style={{ display: "block", marginBottom: 8 }}>Título (aparece pra quem assiste)</span>
-            <Input value={tituloLocal} placeholder="Ex: Elden Ring co-op" maxLength={80}
-              onChange={(e) => setTituloLocal(e.target.value)}
-              onBlur={() => onTituloLive(tituloLocal)}
-              onPressEnter={() => onTituloLive(tituloLocal)} />
+        <div className="drawer-group">
+          <span className="drawer-title">Sua transmissao</span>
+          <div className="drawer-row" style={{ display: "block" }}>
+            <span style={{ display: "block", marginBottom: 8 }}>Titulo (aparece pra quem assiste)</span>
+            <Input value={titleLocal} placeholder="Ex: Elden Ring co-op" maxLength={80}
+              onChange={(e) => setTitleLocal(e.target.value)}
+              onBlur={() => onLiveTitle(titleLocal)}
+              onPressEnter={() => onLiveTitle(titleLocal)} />
           </div>
-          <div className="drawer-linha"><span>Situação</span>
-            <span className="drawer-valor">
-              {!transmitindo ? "Fora do ar"
-                : (meuEstado.estado === "pausado" ? "Em pausa"
-                  : "Ao vivo · " + fmtDuracao(agora - meuEstado.desde))}
+          <div className="drawer-row"><span>Situacao</span>
+            <span className="drawer-value">
+              {!isLive ? "Fora do ar"
+                : (myState.estado === "pausado" ? "Em pausa"
+                  : "Ao vivo · " + fmtDuration(nowDrawer - myState.desde))}
             </span></div>
-          <div className="drawer-linha"><span>Assistindo agora</span>
-            <span className="drawer-valor">{pessoas.length}</span></div>
-          <div className="drawer-linha" style={{ borderTop: 0, paddingTop: 4 }}>
-            <Button icon={<LinkOutlined />} block onClick={onCopiarLink}>Copiar link da sala</Button></div>
+          <div className="drawer-row"><span>Assistindo agora</span>
+            <span className="drawer-value">{people.length}</span></div>
+          <div className="drawer-row" style={{ borderTop: 0, paddingTop: 4 }}>
+            <Button icon={<LinkOutlined />} block onClick={onCopyLink}>Copiar link da sala</Button></div>
         </div>
-        <div className="drawer-grupo">
-          <span className="drawer-titulo">Quando eu compartilho</span>
-          <div className="drawer-linha"><span>Enviar áudio do sistema</span>
-            <Switch checked={ajustes.audioAoCompartilhar} onChange={(v) => setAjustes((a) => ({ ...a, audioAoCompartilhar: v }))} /></div>
-          <div className="drawer-linha"><span>Qualidade que eu envio</span>
-            <Select value={ajustes.qualidadeEnvio} options={OPCOES_ENVIO} style={{ width: 150 }}
-              onChange={(v) => setAjustes((a) => ({ ...a, qualidadeEnvio: v }))} /></div>
+        <div className="drawer-group">
+          <span className="drawer-title">Quando eu compartilho</span>
+          <div className="drawer-row"><span>Enviar audio do sistema</span>
+            <Switch checked={settings.audioOnShare} onChange={(v) => setSettings((s) => ({ ...s, audioOnShare: v }))} /></div>
+          <div className="drawer-row"><span>Qualidade que eu envio</span>
+            <Select value={settings.sendQuality} options={SEND_OPTIONS} style={{ width: 150 }}
+              onChange={(v) => setSettings((s) => ({ ...s, sendQuality: v }))} /></div>
         </div>
-        <div className="drawer-grupo">
-          <span className="drawer-titulo">Quando eu assisto</span>
-          <div className="drawer-linha"><span>Qualidade que eu recebo</span>
-            <Select value={ajustes.qualidadeRecebo} options={OPCOES_RECEBER} style={{ width: 150 }}
-              onChange={(v) => setAjustes((a) => ({ ...a, qualidadeRecebo: v }))} /></div>
-          <div className="drawer-linha"><span>Iniciar transmissões mutadas</span>
-            <Switch checked={ajustes.iniciarMutado} onChange={(v) => setAjustes((a) => ({ ...a, iniciarMutado: v }))} /></div>
-          <div className="drawer-linha"><span>Silenciar todo o áudio</span>
-            <Switch checked={ajustes.silenciarTudo} onChange={(v) => setAjustes((a) => ({ ...a, silenciarTudo: v }))} /></div>
+        <div className="drawer-group">
+          <span className="drawer-title">Quando eu assisto</span>
+          <div className="drawer-row"><span>Qualidade que eu recebo</span>
+            <Select value={settings.receiveQuality} options={RECEIVE_OPTIONS} style={{ width: 150 }}
+              onChange={(v) => setSettings((s) => ({ ...s, receiveQuality: v }))} /></div>
+          <div className="drawer-row"><span>Iniciar transmissoes mutadas</span>
+            <Switch checked={settings.startMuted} onChange={(v) => setSettings((s) => ({ ...s, startMuted: v }))} /></div>
+          <div className="drawer-row"><span>Silenciar todo o audio</span>
+            <Switch checked={settings.muteAll} onChange={(v) => setSettings((s) => ({ ...s, muteAll: v }))} /></div>
         </div>
-        <p className="drawer-nota">Atalhos: F tela cheia, T teatro, M silenciar tudo. Desligar o áudio do
-          sistema evita puxar a voz do Discord pra dentro da transmissão.</p>
+        <p className="drawer-note">Atalhos: F tela cheia, T teatro, M silenciar tudo. Desligar o audio do
+          sistema evita puxar a voz do Discord pra dentro da transmissao.</p>
       </Drawer>
     </div>
   );

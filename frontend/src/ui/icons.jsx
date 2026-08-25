@@ -1,5 +1,4 @@
-// Icones de tema em SVG inline (sem lib externa, sem emoji), herdam a cor do texto.
-export function Sol(props) {
+export function Sun(props) {
   return (
     <svg className="ic" viewBox="0 0 24 24" width="1em" height="1em" fill="none"
       stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
@@ -10,7 +9,7 @@ export function Sol(props) {
   );
 }
 
-export function Lua(props) {
+export function Moon(props) {
   return (
     <svg className="ic" viewBox="0 0 24 24" width="1em" height="1em" fill="none"
       stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"

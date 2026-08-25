@@ -183,19 +183,35 @@ async function handler(req, res) {
   let u;
   try { u = new URL(req.url, "http://localhost"); } catch (e) { res.writeHead(400); res.end("url invalida"); return; }
 
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
+  if (req.method === "OPTIONS") {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+
   if (u.pathname === "/token") {
     if (req.method !== "GET") { res.writeHead(405); res.end("metodo"); return; }
     if (!tokenPermitido()) { json(res, 429, { error: "flood", motivo: "Muitas requisicoes agora. Tente de novo em instantes." }); return; }
 
     const room = (u.searchParams.get("room") || "sala").replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 40) || "sala";
-    const name = (u.searchParams.get("name") || "convidado").replace(/[ -]/g, "").slice(0, 40);
+    const rawName = (u.searchParams.get("name") || "convidado").trim().slice(0, 40) || "convidado";
+    const name = rawName.replace(/[\r\n\t]/g, " ");
+    const safeId = rawName.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-zA-Z0-9_-]/g, "") || "convidado";
 
     if (!(await permiteEntrar(room))) {
       json(res, 429, { error: "limite", motivo: "Servidor cheio: ja tem " + MAX_ROOMS + " salas abertas. Espere uma esvaziar ou entre numa sala que ja existe." });
       return;
     }
-    const identity = (name.replace(/[^a-zA-Z0-9_-]/g, "") || "convidado") + "-" + crypto.randomBytes(3).toString("hex");
-    json(res, 200, { token: tokenDeEntrada(identity, name, room), url: WSS_URL, identity });
+    const identity = safeId + "-" + crypto.randomBytes(3).toString("hex");
+    const host = req.headers["x-forwarded-host"] || req.headers.host || "localhost";
+    const proto = req.headers["x-forwarded-proto"] === "https" || (req.socket && req.socket.encrypted) ? "wss:" : "ws:";
+    const effectiveWssUrl = WSS_URL || (proto + "//" + host);
+
+    json(res, 200, { token: tokenDeEntrada(identity, name, room), url: effectiveWssUrl, identity });
     return;
   }
 

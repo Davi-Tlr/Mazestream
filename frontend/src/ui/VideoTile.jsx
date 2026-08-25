@@ -1,14 +1,13 @@
-import { useRef, useEffect, useState } from "react";
+import { useRef, useEffect, useState, memo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Button, Slider, Tooltip } from "antd";
 import {
   ExportOutlined, FullscreenOutlined, FullscreenExitOutlined, StopOutlined
 } from "@ant-design/icons";
-import EstadoOverlay from "./EstadoOverlay.jsx";
-import { fmtDuracao } from "../estado.js";
+import StateOverlay from "./StateOverlay.jsx";
+import { fmtDuration } from "../state.js";
 
-// Envolve um controle e da micro-interacao de hover/tap.
-function Toque({ children }) {
+function Touch({ children }) {
   return (
     <motion.span style={{ display: "inline-flex" }} whileHover={{ scale: 1.12 }} whileTap={{ scale: 0.9 }}>
       {children}
@@ -16,26 +15,55 @@ function Toque({ children }) {
   );
 }
 
-export default function VideoTile({
+const TileLiveBadge = memo(function TileLiveBadge({ desde }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!desde) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [desde]);
+
+  return (
+    <div className="badge badge-live">
+      AO VIVO{desde ? " · " + fmtDuration(now - desde) : ""}
+    </div>
+  );
+});
+
+const VideoTile = memo(function VideoTile({
   tile, destaque, agora, onSelect, mostrarVolume, volume, onVolume, onMute, onParar
 }) {
   const videoRef = useRef(null);
-  const [emTelaCheia, setEmTelaCheia] = useState(false);
+  const wrapRef = useRef(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isVisible, setIsVisible] = useState(destaque);
+
+  useEffect(() => {
+    if (destaque) { setIsVisible(true); return; }
+    const el = wrapRef.current;
+    if (!el) return;
+    const obs = new IntersectionObserver(([entry]) => {
+      setIsVisible(entry.isIntersecting);
+    }, { threshold: 0.01 });
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [destaque]);
 
   useEffect(() => {
     const el = videoRef.current;
     const track = tile.track;
-    if (el && track) track.attach(el);
-    return () => { if (track) try { track.detach(el); } catch (e) {} };
-  }, [tile.track]);
+    if (!isVisible || !el || !track) return;
+    track.attach(el);
+    return () => { try { track.detach(el); } catch (e) {} };
+  }, [tile.track, isVisible]);
 
   useEffect(() => {
-    function onFs() { setEmTelaCheia(document.fullscreenElement === videoRef.current); }
+    function onFs() { setIsFullscreen(document.fullscreenElement === videoRef.current); }
     document.addEventListener("fullscreenchange", onFs);
     return () => document.removeEventListener("fullscreenchange", onFs);
   }, []);
 
-  async function flutuar(e) {
+  async function togglePiP(e) {
     e.stopPropagation();
     const v = videoRef.current;
     try {
@@ -47,7 +75,7 @@ export default function VideoTile({
     } catch (err) {}
   }
 
-  async function telaCheia(e) {
+  async function toggleFullscreen(e) {
     e.stopPropagation();
     const v = videoRef.current;
     try {
@@ -66,12 +94,13 @@ export default function VideoTile({
 
   const classes = ["tile"];
   if (destaque) classes.push("destaque");
-  if (tile.ehLocal) classes.push("local");
-  if (tile.quality === "poor") classes.push("qualidade-poor");
-  if (tile.quality === "lost") classes.push("qualidade-lost");
+  if (tile.isLocal) classes.push("local");
+  if (tile.quality === "poor") classes.push("quality-poor");
+  if (tile.quality === "lost") classes.push("quality-lost");
 
   return (
     <motion.div
+      ref={wrapRef}
       layout
       layoutId={"tile-" + tile.key}
       transition={{ type: "spring", stiffness: 400, damping: 34 }}
@@ -80,47 +109,45 @@ export default function VideoTile({
       role="button"
       tabIndex={0}
       onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(tile.key); } }}
-      aria-label={"Assistir " + tile.nome}
+      aria-label={"Assistir " + tile.name}
     >
       <video ref={videoRef} autoPlay playsInline muted />
 
-      {tile.ehLocal && (
-        <div className="badge">{tile.ehTela ? "Sua transmissão" : "Sua câmera"}</div>
+      {tile.isLocal && (
+        <div className="badge">{tile.isScreen ? "Sua transmissao" : "Sua camera"}</div>
       )}
-      {tile.ehTela && !tile.ehLocal && tile.estado && tile.estado.estado === "ao_vivo" && (
-        <div className="badge badge-vivo">
-          AO VIVO{tile.estado.desde ? " · " + fmtDuracao((agora || Date.now()) - tile.estado.desde) : ""}
-        </div>
+      {tile.isScreen && !tile.isLocal && tile.state && tile.state.estado === "ao_vivo" && (
+        <TileLiveBadge desde={tile.state.desde} />
       )}
 
-      <div className="acoes" onClick={(e) => e.stopPropagation()}>
-        {tile.ehLocal && tile.ehTela && (
-          <Toque>
-            <Tooltip title="Parar esta transmissão">
+      <div className="actions" onClick={(e) => e.stopPropagation()}>
+        {tile.isLocal && tile.isScreen && (
+          <Touch>
+            <Tooltip title="Parar esta transmissao">
               <Button className="btn-parar" size="small" danger icon={<StopOutlined />}
-                aria-label="Parar transmissão"
+                aria-label="Parar transmissao"
                 onClick={(e) => { e.stopPropagation(); onParar(tile.pubName); }} />
             </Tooltip>
-          </Toque>
+          </Touch>
         )}
-        <Toque>
+        <Touch>
           <Tooltip title="Janela flutuante (PiP)">
-            <Button className="btn-pip" size="small" icon={<ExportOutlined />} aria-label="Picture-in-picture" onClick={flutuar} />
+            <Button className="btn-pip" size="small" icon={<ExportOutlined />} aria-label="Picture-in-picture" onClick={togglePiP} />
           </Tooltip>
-        </Toque>
-        <Toque>
-          <Tooltip title={emTelaCheia ? "Sair da tela cheia" : "Tela cheia"}>
-            <Button className="btn-full" size="small" icon={emTelaCheia ? <FullscreenExitOutlined /> : <FullscreenOutlined />}
-              aria-label="Tela cheia" onClick={telaCheia} />
+        </Touch>
+        <Touch>
+          <Tooltip title={isFullscreen ? "Sair da tela cheia" : "Tela cheia"}>
+            <Button className="btn-full" size="small" icon={isFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />}
+              aria-label="Tela cheia" onClick={toggleFullscreen} />
           </Tooltip>
-        </Toque>
+        </Touch>
       </div>
 
-      <div className="rotulo">{tile.nome}</div>
+      <div className="tile-label">{tile.name}</div>
 
       {mostrarVolume && (
-        <div className="volbar" onClick={(e) => e.stopPropagation()}>
-          <span className="lbl">Vol</span>
+        <div className="vol-bar" onClick={(e) => e.stopPropagation()}>
+          <span className="vol-lbl">Vol</span>
           <Slider style={{ width: 92, margin: 0 }} min={0} max={150}
             value={volume.muted ? 0 : volume.value}
             onChange={(v) => onVolume(v)} tooltip={{ formatter: (v) => v + "%" }} />
@@ -131,10 +158,12 @@ export default function VideoTile({
       )}
 
       <AnimatePresence>
-        {tile.estado && tile.estado.estado === "pausado" && (
-          <EstadoOverlay estado={tile.estado} autor={tile.ehLocal ? "Você" : tile.autor} />
+        {tile.state && tile.state.estado === "pausado" && (
+          <StateOverlay state={tile.state} author={tile.isLocal ? "Voce" : tile.author} />
         )}
       </AnimatePresence>
     </motion.div>
   );
-}
+});
+
+export default VideoTile;

@@ -1,6 +1,7 @@
-// Estado da live viaja na metadata do participante (JSON). Persiste pra quem
-// entra no meio e nao custa nada no servidor. Formato: { v, titulo, estado, desde }.
-export function lerEstado(p) {
+// Live state travels in participant metadata (JSON). Persists for late joiners
+// and costs nothing on the server. Format: { v, titulo, estado, desde }.
+// Note: "titulo", "estado", "desde" are wire-format keys — do not rename.
+export function readState(p) {
   let m = null;
   try { m = p && p.metadata ? JSON.parse(p.metadata) : null; } catch (e) {}
   if (!m || typeof m !== "object") m = {};
@@ -11,7 +12,7 @@ export function lerEstado(p) {
   };
 }
 
-export function montarEstado(e) {
+export function buildState(e) {
   return JSON.stringify({
     v: 1,
     titulo: (e.titulo || "").slice(0, 80),
@@ -20,11 +21,11 @@ export function montarEstado(e) {
   });
 }
 
-// ms -> "m:ss" (ou "h:mm:ss" quando passa de 1h)
-export function fmtDuracao(ms) {
+// ms -> "m:ss" (or "h:mm:ss" past 1h)
+export function fmtDuration(ms) {
   if (!ms || ms < 0) ms = 0;
   const s = Math.floor(ms / 1000);
-  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), seg = s % 60;
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
   const mm = h > 0 ? String(m).padStart(2, "0") : String(m);
-  return (h > 0 ? h + ":" : "") + mm + ":" + String(seg).padStart(2, "0");
+  return (h > 0 ? h + ":" : "") + mm + ":" + String(sec).padStart(2, "0");
 }

@@ -2,8 +2,8 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import { ConfigProvider, App as AntApp } from "antd";
 import ptBR from "antd/locale/pt_BR";
-import { criarTema } from "./theme.js";
-import { TemaProvider, useTema } from "./tema.jsx";
+import { createTheme } from "./theme.js";
+import { ThemeProvider, useTheme } from "./theme.jsx";
 import App from "./App.jsx";
 import "./styles.css";
 
@@ -13,11 +13,10 @@ if ("serviceWorker" in navigator) {
   });
 }
 
-// Le o tema efetivo e monta o ConfigProvider do antd no algoritmo certo.
-function Raiz() {
-  const { escuro } = useTema();
+function Root() {
+  const { dark } = useTheme();
   return (
-    <ConfigProvider theme={criarTema(escuro)} locale={ptBR}>
+    <ConfigProvider theme={createTheme(dark)} locale={ptBR}>
       <AntApp>
         <App />
       </AntApp>
@@ -27,8 +26,8 @@ function Raiz() {
 
 createRoot(document.getElementById("root")).render(
   <React.StrictMode>
-    <TemaProvider>
-      <Raiz />
-    </TemaProvider>
+    <ThemeProvider>
+      <Root />
+    </ThemeProvider>
   </React.StrictMode>
 );

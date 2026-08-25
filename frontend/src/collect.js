@@ -1,66 +1,115 @@
+import { useRef } from "react";
 import { Track } from "livekit-client";
-import { lerEstado } from "./estado.js";
+import { readState } from "./state.js";
 
-export function volumeKey(sid, pubName) { return sid + "::" + pubName; }
+export function volumeKey(sid, pubName) { return (sid || "") + "::" + (pubName || ""); }
 
-export function coletarTiles(room) {
-  const tiles = [];
-  if (!room) return tiles;
-  const lp = room.localParticipant;
-  const meuEstado = lerEstado(lp);
-  lp.trackPublications.forEach((pub) => {
-    if (pub.track && pub.track.kind === "video") {
-      const ehTela = pub.source === Track.Source.ScreenShare;
-      tiles.push({
-        key: pub.trackSid || ("local-" + pub.source),
-        track: pub.track,
-        nome: ehTela ? "Sua transmissão" : "Sua câmera",
-        ehLocal: true, ehTela, source: pub.source, pubName: pub.trackName,
-        sid: lp.sid, quality: lp.connectionQuality,
-        estado: ehTela ? meuEstado : null
-      });
-    }
+function useStableArray(key, compute) {
+  const ref = useRef({ key: null, value: [] });
+  if (ref.current.key !== key) {
+    ref.current = { key, value: compute() };
+  }
+  return ref.current.value;
+}
+
+function tilesKey(room) {
+  if (!room) return "empty";
+  const parts = [];
+  room.localParticipant.trackPublications.forEach((pub) => {
+    if (pub.track && pub.track.kind === "video") parts.push("L" + pub.trackSid);
   });
   room.remoteParticipants.forEach((p) => {
-    const est = lerEstado(p);
     p.trackPublications.forEach((pub) => {
-      if (pub.isSubscribed && pub.track && pub.track.kind === "video") {
-        const ehTela = pub.source === Track.Source.ScreenShare;
-        const nome = p.name || p.identity;
+      if (pub.isSubscribed && pub.track && pub.track.kind === "video") parts.push("R" + pub.trackSid);
+    });
+  });
+  return parts.join("|") || "none";
+}
+
+function audiosKey(room) {
+  if (!room) return "empty";
+  const parts = [];
+  room.remoteParticipants.forEach((p) => {
+    p.trackPublications.forEach((pub) => {
+      if (pub.isSubscribed && pub.track && pub.track.kind === "audio") parts.push("A" + pub.trackSid);
+    });
+  });
+  return parts.join("|") || "none";
+}
+
+function peopleKey(room) {
+  if (!room) return "empty";
+  const parts = [room.localParticipant.sid || ""];
+  room.remoteParticipants.forEach((p) => parts.push(p.sid || ""));
+  return parts.join("|") || "none";
+}
+
+export function useCollectTiles(room, trackVersion, metaVersion) {
+  return useStableArray("tiles:" + tilesKey(room) + ":" + trackVersion + ":" + (metaVersion || 0), () => {
+    const tiles = [];
+    if (!room) return tiles;
+    const lp = room.localParticipant;
+    const myState = readState(lp);
+    lp.trackPublications.forEach((pub) => {
+      if (pub.track && pub.track.kind === "video") {
+        const isScreen = pub.source === Track.Source.ScreenShare;
+        if (!isScreen && (pub.isMuted || pub.track.mediaStreamTrack?.readyState !== "live")) return;
         tiles.push({
-          key: pub.trackSid,
+          key: pub.trackSid || ("local-" + pub.source),
           track: pub.track,
-          nome: ehTela && est.titulo ? est.titulo : (ehTela ? nome + " transmitindo" : nome),
-          autor: nome,
-          ehLocal: false, ehTela, source: pub.source, pubName: pub.trackName,
-          sid: p.sid, quality: p.connectionQuality,
-          estado: ehTela ? est : null
+          name: isScreen ? "Sua transmissao" : "Sua camera",
+          isLocal: true, isScreen, source: pub.source, pubName: pub.trackName,
+          sid: lp.sid, quality: lp.connectionQuality,
+          state: isScreen ? myState : null
         });
       }
     });
-  });
-  return tiles;
-}
-
-export function coletarAudios(room) {
-  const audios = [];
-  if (!room) return audios;
-  room.remoteParticipants.forEach((p) => {
-    p.trackPublications.forEach((pub) => {
-      if (pub.isSubscribed && pub.track && pub.track.kind === "audio") {
-        audios.push({ key: pub.trackSid, track: pub.track, sid: p.sid, pubName: pub.trackName });
-      }
+    room.remoteParticipants.forEach((p) => {
+      const st = readState(p);
+      p.trackPublications.forEach((pub) => {
+        if (pub.isSubscribed && pub.track && pub.track.kind === "video") {
+          const isScreen = pub.source === Track.Source.ScreenShare;
+          if (!isScreen && (pub.isMuted || pub.track.mediaStreamTrack?.readyState !== "live")) return;
+          const displayName = p.name || p.identity;
+          tiles.push({
+            key: pub.trackSid,
+            track: pub.track,
+            name: isScreen && st.titulo ? st.titulo : (isScreen ? displayName + " transmitindo" : displayName),
+            author: displayName,
+            isLocal: false, isScreen, source: pub.source, pubName: pub.trackName,
+            sid: p.sid, quality: p.connectionQuality,
+            state: isScreen ? st : null
+          });
+        }
+      });
     });
+    return tiles;
   });
-  return audios;
 }
 
-export function coletarPessoas(room) {
-  if (!room) return [];
-  const todos = [room.localParticipant].concat(Array.from(room.remoteParticipants.values()));
-  return todos.map((p, i) => ({
-    key: p.sid || ("p" + i),
-    nome: p === room.localParticipant ? "você" : (p.name || p.identity),
-    quality: p.connectionQuality || "unknown"
-  }));
+export function useCollectAudios(room, trackVersion) {
+  return useStableArray("audios:" + audiosKey(room) + ":" + trackVersion, () => {
+    const audios = [];
+    if (!room) return audios;
+    room.remoteParticipants.forEach((p) => {
+      p.trackPublications.forEach((pub) => {
+        if (pub.isSubscribed && pub.track && pub.track.kind === "audio") {
+          audios.push({ key: pub.trackSid, track: pub.track, sid: p.sid, pubName: pub.trackName });
+        }
+      });
+    });
+    return audios;
+  });
+}
+
+export function useCollectPeople(room, participantVersion, metaVersion) {
+  return useStableArray("people:" + peopleKey(room) + ":" + participantVersion + ":" + (metaVersion || 0), () => {
+    if (!room) return [];
+    const all = [room.localParticipant].concat(Array.from(room.remoteParticipants.values()));
+    return all.map((p) => ({
+      key: p.sid,
+      name: p === room.localParticipant ? "voce" : (p.name || p.identity),
+      quality: p.connectionQuality || "unknown"
+    }));
+  });
 }
