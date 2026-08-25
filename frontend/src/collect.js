@@ -51,7 +51,7 @@ export function useCollectTiles(room, trackVersion) {
     const lp = room.localParticipant;
     const myState = readState(lp);
     lp.trackPublications.forEach((pub) => {
-      if (pub.track && pub.track.kind === "video") {
+      if (pub.track && pub.track.kind === "video" && !pub.isMuted) {
         const isScreen = pub.source === Track.Source.ScreenShare;
         tiles.push({
           key: pub.trackSid || ("local-" + pub.source),

@@ -29,7 +29,7 @@ function loadSettings() {
 
 export default function App() {
   const { message } = AntApp.useApp();
-  const { roomRef, connState, connect, disconnect, trackVersion, participantVersion, metadataVersion } = useRoom();
+  const { roomRef, connState, connect, disconnect, trackVer, partVer, metaVer } = useRoom();
 
   const [phase, setPhase] = useState("join");
   const [joining, setJoining] = useState(false);
@@ -46,11 +46,26 @@ export default function App() {
 
   const room = roomRef.current;
 
-  const tiles = useCollectTiles(room, trackVersion);
-  const audios = useCollectAudios(room, trackVersion);
-  const people = useCollectPeople(room, participantVersion);
+  const tiles = useCollectTiles(room, trackVer);
+  const audios = useCollectAudios(room, trackVer);
+  const people = useCollectPeople(room, partVer);
   const screenCount = useMemo(() => tiles.filter((t) => t.isLocal && t.isScreen).length, [tiles]);
-  const myState = useMemo(() => readState(room ? room.localParticipant : null), [room, metadataVersion]);
+  const myState = useMemo(() => readState(room ? room.localParticipant : null), [room, metaVer]);
+
+  // Patch local screen share tiles with live myState — useCollectTiles only
+  // recalculates on trackVer, so metadata changes (pause/resume) would be stale.
+  const patchedTiles = useMemo(() => {
+    let patched = false;
+    const next = tiles.map((t) => {
+      if (t.isLocal && t.isScreen) {
+        const updated = { ...t, state: myState };
+        if (updated.state !== t.state) patched = true;
+        return updated;
+      }
+      return t;
+    });
+    return patched ? next : tiles;
+  }, [tiles, myState]);
 
   const updateMeta = useCallback(async (patch) => {
     if (!room) return;
@@ -132,7 +147,7 @@ export default function App() {
 
   return (
     <RoomView
-      tiles={tiles}
+      tiles={patchedTiles}
       audios={audios}
       people={people}
       screenCount={screenCount}
