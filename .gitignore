@@ -1,11 +1,16 @@
-# Arquivos gerados com credenciais
+# Nunca commitar arquivos com chaves reais
 livekit.yaml
+
+# Variáveis de ambiente do frontend
 .env
 .env.local
 .env.production
 
-# Dados locais
+# Dados do Redis
 dump.rdb
+
+# Dados do Certbot (ficam no servidor)
+/etc/letsencrypt/
 
 # Logs
 *.log

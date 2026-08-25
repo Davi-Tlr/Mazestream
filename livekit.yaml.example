@@ -1,5 +1,5 @@
-# Exemplo de configuracao.
-# O deploy.sh gera livekit.yaml automaticamente.
+# Exemplo de configuração — copie para livekit.yaml e preencha os valores
+# livekit.yaml está no .gitignore e NUNCA deve ser commitado com chaves reais
 
 port: 7880
 
@@ -13,11 +13,12 @@ redis:
   address: localhost:6379
 
 keys:
-  SUA_API_KEY: SEU_API_SECRET
+  minha-api-key: meu-api-secret-super-longo-aqui
 
 turn:
   enabled: true
-  domain: livekit.exemplo.com
+  domain: livekit-turn.meudominio.com
+  tls_port: 5349
   udp_port: 3478
 
 logging:

@@ -1,162 +1,107 @@
-# LiveKit Self Hosted com Caddy
+> **Pra instalar do zero seguindo linha por linha, use [`GUIA-COMPLETO.md`](GUIA-COMPLETO.md).** É o passo a passo único, de cima pra baixo, com verificação em cada etapa. O resto deste README e a pasta `docs/` servem como referência e troubleshooting.
 
-Este repositório reúne uma configuração de LiveKit executada com Docker Compose, Redis e Caddy.
+# 📡 LiveKit Self-Hosted — Oracle A1 Free Tier
 
-O projeto também possui dois serviços opcionais no Compose:
+Setup completo do LiveKit no Oracle Cloud Always Free (A1.Flex) com Caddy ou Nginx, TURN server e frontend próprio.
 
-* frontend próprio, habilitado pelo profile `web`
-* relay para webhook do Discord, habilitado pelo profile `discord`
+> **Objetivo:** substituir o screen sharing do Discord com infraestrutura própria, sem limite de qualidade, rodando junto ao FoundryVTT no mesmo servidor.
 
-O projeto usa Caddy como proxy HTTP/HTTPS.
+---
 
-## Componentes
+## 🗂️ Estrutura do Repositório
 
-`deploy.sh`
-
-Automatiza a preparação do servidor, a geração das credenciais do LiveKit, a criação dos arquivos de configuração, a inicialização dos containers e a integração com o Caddy.
-
-`docker-compose.yaml`
-
-Define os serviços `livekit`, `redis`, `frontend` e `discord-relay`.
-
-`livekit.yaml`
-
-Arquivo de configuração usado pelo servidor LiveKit. O `deploy.sh` gera esse arquivo durante o deploy.
-
-`.env`
-
-Arquivo gerado pelo `deploy.sh` com variáveis usadas pelos serviços opcionais.
-
-`livekit.yaml.example`
-
-Exemplo de estrutura de configuração do LiveKit.
-
-## Requisitos do fluxo documentado
-
-O servidor precisa atender aos requisitos usados pelo próprio `deploy.sh`:
-
-1. Linux com `apt-get` e `systemd`
-2. acesso com privilégios de root ou `sudo`
-3. domínio apontando para o IP público do servidor
-4. Caddy instalado e ativo
-5. acesso às regras de firewall da hospedagem e do sistema
-
-O Docker é instalado pelo script quando necessário.
-
-## Portas usadas
-
-O fluxo com Caddy utiliza as seguintes portas públicas:
-
-```text
-80/TCP
-443/TCP
-7881/TCP
-3478/UDP
-50000-60000/UDP
+```
+livekit-oracle/
+├── README.md                   ← você está aqui
+├── docker-compose.yaml         ← sobe LiveKit + Redis
+├── livekit.yaml                ← config do servidor LiveKit
+├── nginx/
+│   ├── livekit.conf            ← proxy reverso para LiveKit API
+│   └── livekit-turn.conf       ← referência antiga, não usada no fluxo Caddy
+└── docs/
+    ├── 01-oracle-security.md   ← portas a abrir no Oracle
+    ├── 02-instalacao.md        ← passo a passo de instalação
+    ├── 03-nginx.md             ← configuração Nginx
+    ├── 04-livekit-meet.md      ← deploy do frontend
+    └── 05-troubleshooting.md   ← erros comuns e soluções
 ```
 
-O `deploy.sh` também libera `443/UDP` no firewall local.
+---
 
-A porta `7880/TCP` é usada pelo LiveKit internamente e não precisa ser exposta diretamente à internet.
+## ⚡ Requisitos
 
-Mais detalhes estão em [docs/01-rede-e-firewall.md](docs/01-rede-e-firewall.md).
+| Item | Especificação |
+|---|---|
+| Servidor | Oracle A1.Flex (2 OCPUs, 12 GB RAM) |
+| OS | Ubuntu 22.04 LTS |
+| Proxy | Caddy existente do FoundryVTT ou Nginx em servidor dedicado |
+| Docker | Instalar no setup |
+| Domínio | Obrigatório, por exemplo `seulivekit.duckdns.org` |
+| Domínios na mesma instância | um para o Foundry e outro para o LiveKit, ambos no mesmo IP |
 
-## Deploy básico
+---
 
-Confirme primeiro que o Caddy está ativo:
+## 🚀 Resumo do Setup
 
-```bash
-sudo systemctl status caddy
+1. Siga primeiro o [`COMECE-AQUI.md`](COMECE-AQUI.md).
+2. [Abra as portas no Oracle Security List](docs/01-oracle-security.md).
+3. Em uma instância com Foundry e Caddy, rode o deploy com `--use-caddy`.
+4. Consulte o [guia Nginx](docs/03-nginx.md) somente em servidor dedicado.
+5. Use o [troubleshooting](docs/05-troubleshooting.md) se algo não subir.
+
+---
+
+## 🏗️ Arquitetura
+
+```
+Internet
+   │
+   ├─── 443/TCP  ──→ Caddy ──→ FoundryVTT (porta 30000)
+   │                       └──→ LiveKit API/frontend (portas 7880/3000)
+   ├─── 7881/TCP ────────────→ LiveKit RTC fallback
+   ├─── 3478/UDP ────────────→ TURN/UDP
+   │
+   └─── 50000-60000/UDP ──→ LiveKit SFU (direto, sem proxy)
+                              │
+                            Redis (localhost:6379)
 ```
 
-Depois execute:
+> **Por que UDP direto?** WebRTC precisa de portas UDP individualmente endereçáveis. O tráfego de mídia vai direto ao LiveKit. Caddy ou Nginx encaminha somente HTTPS e o WebSocket de sinalização.
 
-```bash
-chmod +x deploy.sh
+---
 
-sudo ./deploy.sh \
-  --domain livekit.exemplo.com \
-  --with-frontend \
-  --use-caddy
-```
+## 📋 Variáveis de Ambiente
 
-A flag `--domain` é obrigatória.
+Antes de começar, defina suas variáveis (substitua em todos os arquivos de config):
 
-A flag `--with-frontend` é opcional. Sem ela, o serviço `frontend` não é iniciado.
+| Variável | Exemplo | Descrição |
+|---|---|---|
+| `SEU_DOMINIO` | `exemplo.com` | Domínio principal |
+| `LIVEKIT_HOST` | `livekit.exemplo.com` | Subdomínio do LiveKit |
+| `API_KEY` | `gerado automaticamente` | Chave da API LiveKit |
+| `API_SECRET` | `gerado automaticamente` | Secret da API LiveKit |
 
-## DuckDNS
+---
 
-O uso de DuckDNS é opcional.
+## 📦 Stack
 
-Quando um domínio DuckDNS for usado, o token pode ser passado ao script:
+- **LiveKit Server** — SFU WebRTC (Go binary via Docker)
+- **Redis** — estado de sala para o LiveKit
+- **TURN integrado ao LiveKit** — fallback de conectividade em `3478/UDP`
+- **Caddy ou Nginx** — proxy reverso + TLS
+- **Certbot** — certificados SSL no modo Nginx
+- **Frontend próprio** — sala web responsiva
 
-```bash
-sudo ./deploy.sh \
-  --domain exemplo.duckdns.org \
-  --duckdns-token TOKEN \
-  --with-frontend \
-  --use-caddy
-```
+---
 
-O script envia uma atualização de IP para o DuckDNS quando `--duckdns-token` é informado.
+## 🔒 Segurança
 
-## Discord
+- Nunca commite `livekit.yaml` com API Key/Secret reais → use `.env` ou secrets
+- Redis fica em `localhost` apenas (sem exposição externa)
+- Caddy gerencia e renova o certificado no modo usado com o Foundry
 
-O relay para Discord também é opcional.
+---
 
-```bash
-sudo ./deploy.sh \
-  --domain livekit.exemplo.com \
-  --with-frontend \
-  --use-caddy \
-  --discord-webhook "URL_DO_WEBHOOK"
-```
+## 📖 Docs completas
 
-Quando essa flag é usada, o profile `discord` é incluído no Docker Compose.
-
-## O que o script faz no modo Caddy
-
-No fluxo com `--use-caddy`, o script:
-
-1. verifica se o Caddy está instalado
-2. verifica se o serviço Caddy está ativo
-3. instala Docker, curl, OpenSSL e Git
-4. instala Docker Compose quando necessário
-5. gera ou reaproveita a API Key e o API Secret
-6. gera `livekit.yaml`
-7. gera `.env`
-8. ajusta o firewall local
-9. sobe os serviços do Docker Compose
-10. cria um backup do Caddyfile
-11. adiciona o domínio do LiveKit ao Caddyfile
-12. valida a configuração do Caddy
-13. recarrega o Caddy
-14. imprime a URL, a API Key e o API Secret
-
-## Arquivos sensíveis
-
-`livekit.yaml` e `.env` guardam credenciais.
-
-O `.gitignore` do projeto já inclui:
-
-```text
-livekit.yaml
-.env
-.env.local
-.env.production
-```
-
-Antes de compartilhar o projeto, confirme que nenhum arquivo com credenciais reais foi enviado junto.
-
-## Documentação
-
-O passo a passo completo está em [GUIA-COMPLETO.md](GUIA-COMPLETO.md).
-
-Os documentos de referência estão em:
-
-* [Rede e firewall](docs/01-rede-e-firewall.md)
-* [Caddy](docs/02-caddy.md)
-* [Frontend](docs/03-frontend.md)
-* [Discord webhook](docs/04-discord-webhook.md)
-* [Operação](docs/05-operacao.md)
-* [Troubleshooting](docs/06-troubleshooting.md)
+Siga os documentos em ordem na pasta [`docs/`](docs/).

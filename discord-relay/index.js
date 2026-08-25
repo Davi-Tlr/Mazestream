@@ -4,7 +4,7 @@
 //
 // Variaveis de ambiente:
 //   DISCORD_WEBHOOK_URL   obrigatorio, o webhook do seu canal no Discord.
-//   PUBLIC_URL            opcional, link que aparece na mensagem (ex: https://livekit.exemplo.com).
+//   PUBLIC_URL            opcional, link que aparece na mensagem (ex: https://seunome.duckdns.org).
 //   PORT                  opcional, padrao 8080.
 
 const http = require("http");

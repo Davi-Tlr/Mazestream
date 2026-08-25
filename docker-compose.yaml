@@ -1,6 +1,6 @@
-# LiveKit Server + Redis, com frontend e relay opcionais.
-# O servico LiveKit usa network_mode: "host" para o fluxo WebRTC deste projeto.
-# Este Compose e destinado a servidor Linux.
+# LiveKit Server + Redis (+ frontend Meet opcional)
+# Requer network_mode: "host" no LiveKit - obrigatorio para WebRTC no Linux.
+# Nao funciona no Mac/Windows (use apenas em servidor Linux).
 
 x-logging: &default-logging
   driver: json-file
@@ -17,6 +17,7 @@ services:
     logging: *default-logging
     volumes:
       - ./livekit.yaml:/etc/livekit.yaml
+      - /etc/letsencrypt:/etc/letsencrypt:ro
 
   redis:
     image: redis:7-alpine
@@ -25,6 +26,9 @@ services:
     logging: *default-logging
     command: redis-server --bind 127.0.0.1 --protected-mode yes
 
+  # Frontend proprio (2 telas ao mesmo tempo + painel de conexao).
+  # So sobe com: docker compose --profile web up -d
+  # (o deploy.sh faz isso quando voce passa --with-frontend).
   frontend:
     profiles: ["web"]
     build: ./frontend
@@ -37,6 +41,8 @@ services:
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-}
       - PUBLIC_WSS_URL=${PUBLIC_WSS_URL:-}
 
+  # Relay de eventos pro Discord. So sobe com: docker compose --profile discord up -d
+  # (o deploy.sh faz isso quando voce passa --discord-webhook URL).
   discord-relay:
     profiles: ["discord"]
     build: ./discord-relay
