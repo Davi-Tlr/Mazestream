@@ -59,7 +59,7 @@ const MemoTile = memo(function MemoTile({ tile, destaque, agora, onSelect, mostr
 
 export default function RoomView(props) {
   const {
-    tiles, audios, people, screenCount, connState,
+    tiles, audios, people, screenCount, totalScreenCount, connState,
     selected, setSelected, volumes, setVolumes,
     settings, setSettings, micOn, camOn,
     currentRoom, myState,
@@ -182,7 +182,7 @@ export default function RoomView(props) {
             <span className="live-pill paused"><PauseOutlined /> EM PAUSA</span>
           )}
           <span className="viewers"><TeamOutlined /> {people.length}</span>
-          <b>{screenCount} ao vivo</b>
+          <b>{(totalScreenCount !== undefined ? totalScreenCount : screenCount)} ao vivo</b>
         </div>
       </header>
 

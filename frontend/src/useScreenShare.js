@@ -22,7 +22,7 @@ export function useScreenShare(room, settings, updateMeta) {
       }
     }
     const remaining = Array.from(room.localParticipant.trackPublications.values())
-      .some((p) => p.source === Track.Source.ScreenShare && p.track);
+      .some((p) => p.source === Track.Source.ScreenShare && p.track && p.trackName !== pubName);
     if (!remaining) updateMeta({ estado: "off", desde: 0 });
   }, [room, updateMeta]);
 
@@ -42,9 +42,9 @@ export function useScreenShare(room, settings, updateMeta) {
 
       const stream = await navigator.mediaDevices.getDisplayMedia({
         video: {
-          frameRate: { ideal: preset.fps, max: preset.fps },
-          width: { ideal: preset.w, max: preset.w },
-          height: { ideal: preset.h, max: preset.h }
+          frameRate: { ideal: preset.fps },
+          width: { ideal: preset.w },
+          height: { ideal: preset.h }
         },
         audio: audioRequest,
         windowAudio: "window",

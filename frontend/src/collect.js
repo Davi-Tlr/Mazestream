@@ -2,7 +2,7 @@ import { useRef } from "react";
 import { Track } from "livekit-client";
 import { readState } from "./state.js";
 
-export function volumeKey(sid, pubName) { return sid + "::" + pubName; }
+export function volumeKey(sid, pubName) { return (sid || "") + "::" + (pubName || ""); }
 
 function useStableArray(key, compute) {
   const ref = useRef({ key: null, value: [] });
@@ -44,15 +44,16 @@ function peopleKey(room) {
   return parts.join("|") || "none";
 }
 
-export function useCollectTiles(room, trackVersion) {
-  return useStableArray("tiles:" + tilesKey(room) + ":" + trackVersion, () => {
+export function useCollectTiles(room, trackVersion, metaVersion) {
+  return useStableArray("tiles:" + tilesKey(room) + ":" + trackVersion + ":" + (metaVersion || 0), () => {
     const tiles = [];
     if (!room) return tiles;
     const lp = room.localParticipant;
     const myState = readState(lp);
     lp.trackPublications.forEach((pub) => {
-      if (pub.track && pub.track.kind === "video" && !pub.isMuted) {
+      if (pub.track && pub.track.kind === "video") {
         const isScreen = pub.source === Track.Source.ScreenShare;
+        if (!isScreen && (pub.isMuted || pub.track.mediaStreamTrack?.readyState !== "live")) return;
         tiles.push({
           key: pub.trackSid || ("local-" + pub.source),
           track: pub.track,
@@ -68,6 +69,7 @@ export function useCollectTiles(room, trackVersion) {
       p.trackPublications.forEach((pub) => {
         if (pub.isSubscribed && pub.track && pub.track.kind === "video") {
           const isScreen = pub.source === Track.Source.ScreenShare;
+          if (!isScreen && (pub.isMuted || pub.track.mediaStreamTrack?.readyState !== "live")) return;
           const displayName = p.name || p.identity;
           tiles.push({
             key: pub.trackSid,
@@ -100,8 +102,8 @@ export function useCollectAudios(room, trackVersion) {
   });
 }
 
-export function useCollectPeople(room, participantVersion) {
-  return useStableArray("people:" + peopleKey(room) + ":" + participantVersion, () => {
+export function useCollectPeople(room, participantVersion, metaVersion) {
+  return useStableArray("people:" + peopleKey(room) + ":" + participantVersion + ":" + (metaVersion || 0), () => {
     if (!room) return [];
     const all = [room.localParticipant].concat(Array.from(room.remoteParticipants.values()));
     return all.map((p) => ({

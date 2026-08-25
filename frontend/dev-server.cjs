@@ -86,11 +86,10 @@ const server = http.createServer((req, res) => {
   if (u.pathname === "/token") {
     const room = (u.searchParams.get("room") || "sala-dev")
       .replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 40) || "sala-dev";
-    const name = (u.searchParams.get("name") || "dev")
-      .replace(/[^\w\s-]/g, "").slice(0, 40);
-
-    const identity = (name.replace(/[^a-zA-Z0-9_-]/g, "") || "dev")
-      + "-" + crypto.randomBytes(3).toString("hex");
+    const rawName = (u.searchParams.get("name") || "dev").trim().slice(0, 40) || "dev";
+    const name = rawName.replace(/[\r\n\t]/g, " ");
+    const safeId = rawName.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-zA-Z0-9_-]/g, "") || "dev";
+    const identity = safeId + "-" + crypto.randomBytes(3).toString("hex");
 
     const token = gerarToken(identity, name, room);
 

@@ -46,26 +46,12 @@ export default function App() {
 
   const room = roomRef.current;
 
-  const tiles = useCollectTiles(room, trackVer);
+  const tiles = useCollectTiles(room, trackVer, metaVer);
   const audios = useCollectAudios(room, trackVer);
-  const people = useCollectPeople(room, partVer);
+  const people = useCollectPeople(room, partVer, metaVer);
   const screenCount = useMemo(() => tiles.filter((t) => t.isLocal && t.isScreen).length, [tiles]);
+  const totalScreenCount = useMemo(() => tiles.filter((t) => t.isScreen).length, [tiles]);
   const myState = useMemo(() => readState(room ? room.localParticipant : null), [room, metaVer]);
-
-  // Patch local screen share tiles with live myState — useCollectTiles only
-  // recalculates on trackVer, so metadata changes (pause/resume) would be stale.
-  const patchedTiles = useMemo(() => {
-    let patched = false;
-    const next = tiles.map((t) => {
-      if (t.isLocal && t.isScreen) {
-        const updated = { ...t, state: myState };
-        if (updated.state !== t.state) patched = true;
-        return updated;
-      }
-      return t;
-    });
-    return patched ? next : tiles;
-  }, [tiles, myState]);
 
   const updateMeta = useCallback(async (patch) => {
     if (!room) return;
@@ -87,7 +73,7 @@ export default function App() {
         }
       });
     });
-  }, [room, settings.receiveQuality]);
+  }, [room, settings.receiveQuality, trackVer]);
 
   const join = useCallback(async (name, roomName) => {
     setJoining(true);
@@ -147,10 +133,11 @@ export default function App() {
 
   return (
     <RoomView
-      tiles={patchedTiles}
+      tiles={tiles}
       audios={audios}
       people={people}
       screenCount={screenCount}
+      totalScreenCount={totalScreenCount}
       connState={connState}
       selected={selected}
       setSelected={setSelected}

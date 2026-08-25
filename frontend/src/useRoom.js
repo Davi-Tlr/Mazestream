@@ -13,7 +13,17 @@ export function useRoom() {
   const [metaVer, incMeta] = useReducer((x) => x + 1, 0);
 
   const connect = useCallback(async (url, token) => {
-    const room = new Room({ adaptiveStream: true, dynacast: true });
+    const room = new Room({
+      adaptiveStream: true,
+      dynacast: true,
+      publishDefaults: {
+        simulcast: true,
+        stopMicTrackOnMute: true
+      },
+      videoCaptureDefaults: {
+        resolution: { width: 1280, height: 720, frameRate: 30 }
+      }
+    });
     roomRef.current = room;
 
     // Track events: subscribe, unsubscribe, publish, unpublish, mute, unmute
@@ -33,10 +43,16 @@ export function useRoom() {
       .on(RoomEvent.ParticipantConnected, onPart)
       .on(RoomEvent.ParticipantDisconnected, onPart)
       .on(RoomEvent.ParticipantMetadataChanged, onMeta)
+      .on(RoomEvent.ParticipantNameChanged, onMeta)
       // ConnectionQualityChanged NAO dispara bump - fired very often
       // and only affects the quality badge, which updates on next track/part event anyway.
       .on(RoomEvent.Reconnecting, () => setConnState("reconnecting"))
-      .on(RoomEvent.Reconnected, () => setConnState("connected"))
+      .on(RoomEvent.Reconnected, () => {
+        setConnState("connected");
+        incTracks();
+        incParts();
+        incMeta();
+      })
       .on(RoomEvent.Disconnected, () => setConnState("disconnected"));
 
     setConnState("connecting");

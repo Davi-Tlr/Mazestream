@@ -15,6 +15,21 @@ function Touch({ children }) {
   );
 }
 
+const TileLiveBadge = memo(function TileLiveBadge({ desde }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!desde) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [desde]);
+
+  return (
+    <div className="badge badge-live">
+      AO VIVO{desde ? " · " + fmtDuration(now - desde) : ""}
+    </div>
+  );
+});
+
 const VideoTile = memo(function VideoTile({
   tile, destaque, agora, onSelect, mostrarVolume, volume, onVolume, onMute, onParar
 }) {
@@ -102,9 +117,7 @@ const VideoTile = memo(function VideoTile({
         <div className="badge">{tile.isScreen ? "Sua transmissao" : "Sua camera"}</div>
       )}
       {tile.isScreen && !tile.isLocal && tile.state && tile.state.estado === "ao_vivo" && (
-        <div className="badge badge-live">
-          AO VIVO{tile.state.desde ? " · " + fmtDuration((agora || Date.now()) - tile.state.desde) : ""}
-        </div>
+        <TileLiveBadge desde={tile.state.desde} />
       )}
 
       <div className="actions" onClick={(e) => e.stopPropagation()}>
