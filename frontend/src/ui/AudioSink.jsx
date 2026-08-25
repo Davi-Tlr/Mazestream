@@ -1,7 +1,8 @@
-import { useRef, useEffect } from "react";
+import { useRef, useEffect, memo } from "react";
 
 // Toca uma transmissao de audio e aplica o volume/mudo local do usuario.
-export default function AudioSink({ track, volume, muteAll }) {
+// React.memo: so re-renderiza quando track/volume/muteAll mudam.
+const AudioSink = memo(function AudioSink({ track, volume, muteAll }) {
   const elRef = useRef(null);
 
   useEffect(() => {
@@ -24,4 +25,6 @@ export default function AudioSink({ track, volume, muteAll }) {
   }, [track, volume, muteAll]);
 
   return null;
-}
+});
+
+export default AudioSink;

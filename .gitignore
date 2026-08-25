@@ -1,6 +1,10 @@
 # Nunca commitar arquivos com chaves reais
 livekit.yaml
 
+# Dependencias e build
+node_modules/
+dist/
+
 # Variáveis de ambiente do frontend
 .env
 .env.local

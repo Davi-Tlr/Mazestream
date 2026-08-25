@@ -145,3 +145,112 @@ E o que realmente protege o servidor do RPG. No painel da Oracle:
 Assim voce recebe email quando a saida real dispara, independente da estimativa.
 Combinado com os limites de sala e o vigia do Discord, e' o suficiente pra um
 servidor caseiro nao te dar susto na conta de banda.
+
+---
+
+## Desenvolvimento local
+
+Modo de rodar o frontend sem Docker nem envs, so pra testar a UI e prototipar.
+
+### Pre-requisitos
+
+- Node.js v20+
+- Docker (pra rodar LiveKit + Redis)
+
+### Passo a passo
+
+**1. Instalar dependencias:**
+
+```bash
+cd frontend
+npm install
+```
+
+**2. Criar `livekit.yaml` na raiz do projeto** (nao versionado):
+
+```yaml
+port: 7880
+rtc:
+  tcp_port: 7881
+  port_range_start: 50000
+  port_range_end: 60000
+  use_external_ip: false
+redis:
+  address: 127.0.0.1:6379
+keys:
+  devkey: devsecret
+turn:
+  enabled: false
+logging:
+  level: info
+  json: false
+```
+
+**3. Subir LiveKit + Redis:**
+
+```bash
+docker compose up -d livekit redis
+```
+
+**4. Rodar o frontend (Vite + token server):**
+
+```bash
+cd frontend
+npm run dev:full
+```
+
+Isso sobe dois processos:
+- **Vite** na porta `5173` (hot reload)
+- **dev-server** na porta `3001` (gera tokens JWT com chave `devkey`/`devsecret`)
+
+O Vite proxya `/token` pro dev-server automaticamente. Abra `http://localhost:5173`.
+
+### Comandos uteis
+
+| Comando | O que faz |
+|---|---|
+| `npm run dev` | Só o Vite (sem token server, nao conecta no LiveKit) |
+| `npm run dev:token` | Só o token server |
+| `npm run dev:full` | Vite + token server juntos |
+| `npm run build` | Build de producao em `dist/` |
+
+### Variaveis de ambiente (todas opcionais em dev)
+
+O `dev-server.cjs` nao exige nenhuma env. Se quiser apontar pra um LiveKit remoto,
+crie um `.env` no `frontend/`:
+
+```
+PUBLIC_WSS_URL=wss://seudominio.com
+LIVEKIT_API_KEY=suachave
+LIVEKIT_API_SECRET=seusegreto
+```
+
+Consulte `.env.example` pra ver todas as opcoes.
+
+### O que funciona sem LiveKit rodando
+
+A tela de join carrega normalmente. Ao clicar "Entrar", vai dar erro de conexao
+ MotionEvent: o frontend tenta conectar em `ws://localhost:7880` e falha. A UI
+renderiza, mas nao tem video/audio sem o LiveKit.
+
+### Arquitetura do dev
+
+```
+Browser (localhost:5173)
+  │
+  ├── /token ──proxy──> dev-server (localhost:3001)
+  │                       └── gera JWT com devkey/devsecret
+  │
+  └── ws://localhost:7880 ──> LiveKit Server
+                                └── Redis (localhost:6379)
+```
+
+### Parar tudo
+
+```bash
+# Parar frontend
+Ctrl+C no terminal onde roda npm run dev:full
+
+# Parar LiveKit + Redis
+docker compose down
+```
