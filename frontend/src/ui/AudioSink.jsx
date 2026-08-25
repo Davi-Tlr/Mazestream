@@ -1,8 +1,7 @@
 import { useRef, useEffect, memo } from "react";
 
-// Toca uma transmissao de audio e aplica o volume/mudo local do usuario.
-// React.memo: so re-renderiza quando track/volume/muteAll mudam.
-const AudioSink = memo(function AudioSink({ track, volume, muteAll }) {
+// Plays one remote audio track and applies both per-track and per-person volume.
+const AudioSink = memo(function AudioSink({ track, volume, muteAll, personVolume = 100 }) {
   const elRef = useRef(null);
 
   useEffect(() => {
@@ -18,11 +17,13 @@ const AudioSink = memo(function AudioSink({ track, volume, muteAll }) {
   }, [track]);
 
   useEffect(() => {
-    const mudo = muteAll || (volume && volume.muted);
-    const nivel = mudo ? 0 : ((volume ? volume.value : 100) / 100);
-    if (track && track.setVolume) { try { track.setVolume(nivel); } catch (e) {} }
-    if (elRef.current) elRef.current.muted = !!mudo;
-  }, [track, volume, muteAll]);
+    const muted = muteAll || (volume && volume.muted);
+    const trackLevel = (volume ? volume.value : 100) / 100;
+    const personLevel = Math.max(0, Math.min(150, personVolume)) / 100;
+    const level = muted ? 0 : Math.min(1.5, trackLevel * personLevel);
+    if (track && track.setVolume) { try { track.setVolume(level); } catch (e) {} }
+    if (elRef.current) elRef.current.muted = !!muted;
+  }, [track, volume, muteAll, personVolume]);
 
   return null;
 });

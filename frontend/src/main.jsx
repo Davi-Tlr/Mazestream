@@ -6,6 +6,7 @@ import { createTheme } from "./theme.js";
 import { ThemeProvider, useTheme } from "./theme.jsx";
 import App from "./App.jsx";
 import "./styles.css";
+import "./interactions.css";
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", function () {

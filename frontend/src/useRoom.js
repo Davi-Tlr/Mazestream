@@ -1,16 +1,17 @@
 import { useRef, useReducer, useState, useCallback, useEffect } from "react";
 import { Room, RoomEvent } from "livekit-client";
 
-// Mantem a Room do LiveKit com estado granular.
-// Em vez de um "tick" unico que re-renderiza tudo, usa contadores
-// separados pra tracks, participantes e metadata. Assim so o que
-// mudou triggera re-render nos componentes que dependem daquilo.
+// Keeps the LiveKit room with granular version counters so unrelated events do
+// not force every collector to rebuild.
 export function useRoom() {
   const roomRef = useRef(null);
   const [connState, setConnState] = useState("idle");
   const [trackVer, incTracks] = useReducer((x) => x + 1, 0);
   const [partVer, incParts] = useReducer((x) => x + 1, 0);
   const [metaVer, incMeta] = useReducer((x) => x + 1, 0);
+  const [qualityVer, incQuality] = useReducer((x) => x + 1, 0);
+  const [permissionVer, incPermission] = useReducer((x) => x + 1, 0);
+  const [audioBlocked, setAudioBlocked] = useState(false);
 
   const connect = useCallback(async (url, token) => {
     const room = new Room({
@@ -26,11 +27,8 @@ export function useRoom() {
     });
     roomRef.current = room;
 
-    // Track events: subscribe, unsubscribe, publish, unpublish, mute, unmute
     const onTrack = () => incTracks();
-    // Participant events: connect, disconnect
     const onPart = () => incParts();
-    // Metadata events: titulo, estado, etc.
     const onMeta = () => incMeta();
 
     room
@@ -44,24 +42,42 @@ export function useRoom() {
       .on(RoomEvent.ParticipantDisconnected, onPart)
       .on(RoomEvent.ParticipantMetadataChanged, onMeta)
       .on(RoomEvent.ParticipantNameChanged, onMeta)
-      // ConnectionQualityChanged NAO dispara bump - fired very often
-      // and only affects the quality badge, which updates on next track/part event anyway.
+      .on(RoomEvent.ConnectionQualityChanged, () => incQuality())
+      .on(RoomEvent.ParticipantPermissionsChanged, () => incPermission())
+      .on(RoomEvent.AudioPlaybackStatusChanged, () => {
+        setAudioBlocked(!room.canPlaybackAudio);
+      })
       .on(RoomEvent.Reconnecting, () => setConnState("reconnecting"))
       .on(RoomEvent.Reconnected, () => {
         setConnState("connected");
         incTracks();
         incParts();
         incMeta();
+        incQuality();
+        incPermission();
+        setAudioBlocked(!room.canPlaybackAudio);
       })
       .on(RoomEvent.Disconnected, () => setConnState("disconnected"));
 
     setConnState("connecting");
     await room.connect(url, token);
     setConnState("connected");
+    setAudioBlocked(!room.canPlaybackAudio);
     incTracks();
     incParts();
     incMeta();
+    incQuality();
+    incPermission();
     return room;
+  }, []);
+
+  const enableAudio = useCallback(async () => {
+    const room = roomRef.current;
+    if (!room) return;
+    try {
+      await room.startAudio();
+      setAudioBlocked(!room.canPlaybackAudio);
+    } catch (e) {}
   }, []);
 
   const disconnect = useCallback(() => {
@@ -72,7 +88,7 @@ export function useRoom() {
 
   return {
     roomRef, connState, connect, disconnect,
-    // Version counters pra consumers granulares
-    trackVer, partVer, metaVer
+    trackVer, partVer, metaVer, qualityVer, permissionVer,
+    audioBlocked, enableAudio
   };
 }

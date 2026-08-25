@@ -5,6 +5,7 @@ import {
   ExportOutlined, FullscreenOutlined, FullscreenExitOutlined, StopOutlined
 } from "@ant-design/icons";
 import StateOverlay from "./StateOverlay.jsx";
+import InteractionOverlay from "./InteractionOverlay.jsx";
 import { fmtDuration } from "../state.js";
 
 function Touch({ children }) {
@@ -31,7 +32,9 @@ const TileLiveBadge = memo(function TileLiveBadge({ desde }) {
 });
 
 const VideoTile = memo(function VideoTile({
-  tile, destaque, agora, onSelect, mostrarVolume, volume, onVolume, onMute, onParar
+  tile, destaque, agora, onSelect, mostrarVolume, volume, onVolume, onMute, onParar,
+  interactions, interactionTool, brush, markerStyle, pendingReaction,
+  onPing, onStroke, onCursor, onReactionAt
 }) {
   const videoRef = useRef(null);
   const wrapRef = useRef(null);
@@ -114,7 +117,7 @@ const VideoTile = memo(function VideoTile({
       <video ref={videoRef} autoPlay playsInline muted />
 
       {tile.isLocal && (
-        <div className="badge">{tile.isScreen ? "Sua transmissao" : "Sua camera"}</div>
+        <div className="badge">{tile.isScreen ? "Sua transmissão" : "Sua câmera"}</div>
       )}
       {tile.isScreen && !tile.isLocal && tile.state && tile.state.estado === "ao_vivo" && (
         <TileLiveBadge desde={tile.state.desde} />
@@ -123,16 +126,16 @@ const VideoTile = memo(function VideoTile({
       <div className="actions" onClick={(e) => e.stopPropagation()}>
         {tile.isLocal && tile.isScreen && (
           <Touch>
-            <Tooltip title="Parar esta transmissao">
+            <Tooltip title="Parar esta transmissão">
               <Button className="btn-parar" size="small" danger icon={<StopOutlined />}
-                aria-label="Parar transmissao"
+                aria-label="Parar transmissão"
                 onClick={(e) => { e.stopPropagation(); onParar(tile.pubName); }} />
             </Tooltip>
           </Touch>
         )}
         <Touch>
           <Tooltip title="Janela flutuante (PiP)">
-            <Button className="btn-pip" size="small" icon={<ExportOutlined />} aria-label="Picture-in-picture" onClick={togglePiP} />
+            <Button className="btn-pip" size="small" icon={<ExportOutlined />} aria-label="Janela flutuante" onClick={togglePiP} />
           </Tooltip>
         </Touch>
         <Touch>
@@ -157,9 +160,24 @@ const VideoTile = memo(function VideoTile({
         </div>
       )}
 
+      {destaque && (
+        <InteractionOverlay
+          videoRef={videoRef}
+          tool={interactionTool}
+          items={interactions || []}
+          brush={brush}
+          markerStyle={markerStyle}
+          pendingReaction={pendingReaction}
+          onPing={onPing}
+          onStroke={onStroke}
+          onCursor={onCursor}
+          onReactionAt={onReactionAt}
+        />
+      )}
+
       <AnimatePresence>
         {tile.state && tile.state.estado === "pausado" && (
-          <StateOverlay state={tile.state} author={tile.isLocal ? "Voce" : tile.author} />
+          <StateOverlay state={tile.state} author={tile.isLocal ? "Você" : tile.author} />
         )}
       </AnimatePresence>
     </motion.div>

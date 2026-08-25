@@ -1,22 +1,19 @@
 import { useState, useEffect } from "react";
-import { Input, Button, Modal, Tooltip } from "antd";
+import { Input, Button, Modal, Tooltip, Segmented, Select } from "antd";
+import { EyeOutlined, UserOutlined } from "@ant-design/icons";
 import { Sun, Moon } from "./icons.jsx";
 import { useTheme } from "../theme.jsx";
+import { PRESET_OPTIONS, ROOM_PRESETS } from "../roomFeatures.js";
 
 function Terms({ open, onClose }) {
   return (
-    <Modal
-      title="Sobre o Mazestream"
-      open={open}
-      onCancel={onClose}
-      centered
-      footer={[<Button key="ok" type="primary" onClick={onClose}>Entendi</Button>]}
-    >
+    <Modal title="Sobre o Mazestream" open={open} onCancel={onClose} centered
+      footer={[<Button key="ok" type="primary" onClick={onClose}>Entendi</Button>]}>
       <div className="terms-text">
         <p>O <b>Mazestream</b> roda num servidor caseiro, o mesmo que uso pros meus projetos de RPG e outras coisas.</p>
-        <p>Pra ele nao sair do ar nem pesar demais, tem <b>limite de salas simultaneas</b> e de gente por sala. Se der "servidor cheio", e so esperar uma sala esvaziar.</p>
-        <p>Cada pessoa que assiste puxa a transmissao do servidor, entao quanto mais gente ao mesmo tempo, mais banda. Use com consciencia e evite espalhar o link pra muita gente de uma vez.</p>
-        <p>E de graça e sem garantia: pode cair, pode ter manutencao. Se cair, respira e tenta de novo mais tarde.</p>
+        <p>Pra ele não sair do ar nem pesar demais, tem <b>limite de salas simultâneas</b> e de gente por sala. Se der "servidor cheio", é só esperar uma sala esvaziar.</p>
+        <p>Arquivos enviados pelo chat são temporários e pequenos. Eles somem automaticamente e não funcionam como armazenamento permanente.</p>
+        <p>É de graça e sem garantia: pode cair, pode ter manutenção. Se cair, tenta de novo depois.</p>
       </div>
     </Modal>
   );
@@ -28,6 +25,9 @@ export default function JoinScreen({ joining, onJoin }) {
     try { return new URLSearchParams(window.location.search).get("sala") || "geral"; }
     catch (e) { return "geral"; }
   });
+  const [pin, setPin] = useState("");
+  const [role, setRole] = useState("participant");
+  const [preset, setPreset] = useState("livre");
   const [termsOpen, setTermsOpen] = useState(false);
   const theme = useTheme();
 
@@ -39,9 +39,13 @@ export default function JoinScreen({ joining, onJoin }) {
   }, []);
 
   function submit() {
-    const n = (name || "").trim() || "convidado";
-    const r = (room || "").trim() || "geral";
-    onJoin(n, r);
+    const cleanName = (name || "").trim() || "convidado";
+    const cleanRoom = (room || "").trim() || "geral";
+    onJoin(cleanName, cleanRoom, {
+      spectator: role === "spectator",
+      pin: (pin || "").trim(),
+      preset
+    });
   }
 
   return (
@@ -55,27 +59,48 @@ export default function JoinScreen({ joining, onJoin }) {
           </Tooltip>
         </div>
         <h1>Entre e compartilhe.</h1>
-        <p className="subtitle">Tela, camera e audio em uma sala, direto no navegador. A voz fica no seu Discord.</p>
+        <p className="subtitle">Tela, câmera e áudio em uma sala, direto no navegador. A voz pode continuar no seu Discord.</p>
 
         <div className="field">
           <label htmlFor="name">Seu nome</label>
           <Input id="name" size="large" placeholder="Seu nome" maxLength={40}
-            value={name} onChange={(e) => setName(e.target.value)} onPressEnter={submit} />
+            value={name} onChange={(event) => setName(event.target.value)} onPressEnter={submit} />
         </div>
 
         <div className="field">
           <label htmlFor="room">Nome da sala</label>
           <Input id="room" size="large" placeholder="geral" maxLength={40}
-            value={room} onChange={(e) => setRoom(e.target.value)} onPressEnter={submit} />
+            value={room} onChange={(event) => setRoom(event.target.value)} onPressEnter={submit} />
         </div>
 
+        <div className="field">
+          <label>Como você quer entrar?</label>
+          <Segmented block value={role} onChange={setRole} options={[
+            { value: "participant", label: <span><UserOutlined /> Participar</span> },
+            { value: "spectator", label: <span><EyeOutlined /> Só assistir</span> }
+          ]} />
+        </div>
+
+        <div className="join-inline-fields">
+          <div className="field">
+            <label htmlFor="pin">PIN da sala <span className="field-optional">opcional</span></label>
+            <Input.Password id="pin" size="large" placeholder="Se a sala tiver PIN" maxLength={24}
+              value={pin} onChange={(event) => setPin(event.target.value)} onPressEnter={submit} />
+          </div>
+          <div className="field">
+            <label>Modo se a sala for nova</label>
+            <Select size="large" value={preset} options={PRESET_OPTIONS} style={{ width: "100%" }} onChange={setPreset} />
+          </div>
+        </div>
+        <p className="preset-hint">{ROOM_PRESETS[preset]?.description}</p>
+
         <Button type="primary" size="large" block loading={joining} onClick={submit}>
-          Entrar
+          {role === "spectator" ? "Entrar só para assistir" : "Entrar"}
         </Button>
 
         <p className="join-notice">
-          Servidor caseiro e compartilhado, com limite de salas.{" "}
-          <Button type="link" onClick={() => setTermsOpen(true)}>Por que?</Button>
+          Se você for a primeira pessoa de uma sala nova, vira o host dela automaticamente.{" "}
+          <Button type="link" onClick={() => setTermsOpen(true)}>Como funciona?</Button>
         </p>
       </div>
 

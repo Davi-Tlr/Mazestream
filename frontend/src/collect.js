@@ -4,6 +4,20 @@ import { readState } from "./state.js";
 
 export function volumeKey(sid, pubName) { return (sid || "") + "::" + (pubName || ""); }
 
+export function getParticipantName(participant) {
+  return (participant && (participant.name || participant.identity)) || "";
+}
+
+export function getPersonSettings(settings, name) {
+  const current = (settings && settings[name]) || {};
+  return {
+    muted: !!current.muted,
+    cameraHidden: !!current.cameraHidden,
+    interactionsHidden: !!current.interactionsHidden,
+    volume: typeof current.volume === "number" ? Math.max(0, Math.min(150, current.volume)) : 100
+  };
+}
+
 function useStableArray(key, compute) {
   const ref = useRef({ key: null, value: [] });
   if (ref.current.key !== key) {
@@ -44,8 +58,14 @@ function peopleKey(room) {
   return parts.join("|") || "none";
 }
 
-export function useCollectTiles(room, trackVersion, metaVersion) {
-  return useStableArray("tiles:" + tilesKey(room) + ":" + trackVersion + ":" + (metaVersion || 0), () => {
+function peopleSettingsKey(settings) {
+  try { return JSON.stringify(settings || {}); }
+  catch (e) { return "{}"; }
+}
+
+export function useCollectTiles(room, trackVersion, metaVersion, peopleSettings) {
+  const settingsKey = peopleSettingsKey(peopleSettings);
+  return useStableArray("tiles:" + tilesKey(room) + ":" + trackVersion + ":" + (metaVersion || 0) + ":" + settingsKey, () => {
     const tiles = [];
     if (!room) return tiles;
     const lp = room.localParticipant;
@@ -57,27 +77,29 @@ export function useCollectTiles(room, trackVersion, metaVersion) {
         tiles.push({
           key: pub.trackSid || ("local-" + pub.source),
           track: pub.track,
-          name: isScreen ? "Sua transmissao" : "Sua camera",
+          name: isScreen ? "Sua transmissão" : "Sua câmera",
           isLocal: true, isScreen, source: pub.source, pubName: pub.trackName,
-          sid: lp.sid, quality: lp.connectionQuality,
+          sid: lp.sid, identity: lp.identity, quality: lp.connectionQuality,
           state: isScreen ? myState : null
         });
       }
     });
     room.remoteParticipants.forEach((p) => {
       const st = readState(p);
+      const displayName = getParticipantName(p);
+      const personSettings = getPersonSettings(peopleSettings, displayName);
       p.trackPublications.forEach((pub) => {
         if (pub.isSubscribed && pub.track && pub.track.kind === "video") {
           const isScreen = pub.source === Track.Source.ScreenShare;
           if (!isScreen && (pub.isMuted || pub.track.mediaStreamTrack?.readyState !== "live")) return;
-          const displayName = p.name || p.identity;
+          if (!isScreen && personSettings.cameraHidden) return;
           tiles.push({
             key: pub.trackSid,
             track: pub.track,
             name: isScreen && st.titulo ? st.titulo : (isScreen ? displayName + " transmitindo" : displayName),
             author: displayName,
             isLocal: false, isScreen, source: pub.source, pubName: pub.trackName,
-            sid: p.sid, quality: p.connectionQuality,
+            sid: p.sid, identity: p.identity, quality: p.connectionQuality,
             state: isScreen ? st : null
           });
         }
@@ -94,7 +116,13 @@ export function useCollectAudios(room, trackVersion) {
     room.remoteParticipants.forEach((p) => {
       p.trackPublications.forEach((pub) => {
         if (pub.isSubscribed && pub.track && pub.track.kind === "audio") {
-          audios.push({ key: pub.trackSid, track: pub.track, sid: p.sid, pubName: pub.trackName });
+          audios.push({
+            key: pub.trackSid,
+            track: pub.track,
+            sid: p.sid,
+            pubName: pub.trackName,
+            owner: getParticipantName(p)
+          });
         }
       });
     });
@@ -102,14 +130,35 @@ export function useCollectAudios(room, trackVersion) {
   });
 }
 
-export function useCollectPeople(room, participantVersion, metaVersion) {
-  return useStableArray("people:" + peopleKey(room) + ":" + participantVersion + ":" + (metaVersion || 0), () => {
-    if (!room) return [];
-    const all = [room.localParticipant].concat(Array.from(room.remoteParticipants.values()));
-    return all.map((p) => ({
-      key: p.sid,
-      name: p === room.localParticipant ? "voce" : (p.name || p.identity),
-      quality: p.connectionQuality || "unknown"
-    }));
-  });
+export function useCollectPeople(room, participantVersion, metaVersion, trackVersion, qualityVersion, permissionVersion) {
+  return useStableArray(
+    "people:" + peopleKey(room) + ":" + participantVersion + ":" + (metaVersion || 0) + ":" + (trackVersion || 0) + ":" + (qualityVersion || 0) + ":" + (permissionVersion || 0),
+    () => {
+      if (!room) return [];
+      const all = [room.localParticipant].concat(Array.from(room.remoteParticipants.values()));
+      return all.map((p, index) => {
+        const isLocal = p === room.localParticipant;
+        let hasCamera = false, hasMic = false, hasScreen = false;
+        p.trackPublications.forEach((pub) => {
+          if (pub.source === Track.Source.Camera) hasCamera = true;
+          else if (pub.source === Track.Source.Microphone) hasMic = true;
+          else if (pub.source === Track.Source.ScreenShare) hasScreen = true;
+        });
+        const rawName = getParticipantName(p);
+        return {
+          key: p.sid || ("p" + index),
+          name: isLocal ? "você" : rawName,
+          rawName,
+          identity: p.identity,
+          isLocal,
+          hasCamera,
+          hasMic,
+          hasScreen,
+          canPublish: p.permissions ? p.permissions.canPublish !== false : true,
+          canPublishData: p.permissions ? p.permissions.canPublishData !== false : true,
+          quality: p.connectionQuality || "unknown"
+        };
+      });
+    }
+  );
 }
