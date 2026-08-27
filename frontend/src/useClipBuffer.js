@@ -155,12 +155,8 @@ export function useClipBuffer(room, tile, maxSeconds = 45, enabled = false) {
           quality: new Quality({ bitrate: 4_000_000 }),
           keyFrameInterval: 1,
           sizeChangeBehavior: "contain",
-          onEncoderConfig: (config) => {
-            runtime.videoMeta = { decoderConfig: config };
-          },
           onEncodedPacket: (packet, meta) => {
             if (disposed || runtime.failed) return;
-            if (meta && !runtime.videoMeta) runtime.videoMeta = meta;
             try { appendClipPacket(runtime, "video", packet, meta); }
             catch (error) { onPacketError(error); return; }
             runtime.latest = Math.max(runtime.latest, packet.timestamp + packet.duration);
@@ -175,12 +171,8 @@ export function useClipBuffer(room, tile, maxSeconds = 45, enabled = false) {
           audioSource = new MediaStreamAudioTrackSource(liveAudioTrack, {
             codec: audioCodec,
             quality: new Quality({ bitrate: 128_000 }),
-            onEncoderConfig: (config) => {
-              runtime.audioMeta = { decoderConfig: config };
-            },
             onEncodedPacket: (packet, meta) => {
               if (disposed || runtime.failed) return;
-              if (meta && !runtime.audioMeta) runtime.audioMeta = meta;
               try { appendClipPacket(runtime, "audio", packet, meta); }
               catch (error) { onPacketError(error); }
             }

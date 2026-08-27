@@ -37,7 +37,8 @@ export const DEFAULT_SETTINGS = {
   receiveQuality: "auto",
   muteAll: false,
   startMuted: true,
-  interactionsEnabled: true
+  interactionsEnabled: true,
+  pointersEnabled: true
 };
 
 export const QUALITY_LABELS = {

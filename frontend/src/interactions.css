@@ -39,7 +39,8 @@
   position: absolute;
   z-index: 14;
   right: 4px;
-  bottom: 4px;
+  top: 4px;
+  bottom: auto;
   opacity: .72;
   background: var(--surface);
   border-color: var(--line-soft);
@@ -47,16 +48,15 @@
 .hud-toggle.ant-btn:hover { opacity: 1; }
 
 .room[data-hud="off"] .toolbar {
-  max-height: 0;
-  min-height: 0;
-  padding-top: 0;
-  padding-bottom: 0;
-  border-top-width: 0;
   opacity: 0;
-  overflow: hidden;
+  visibility: hidden;
   pointer-events: none;
 }
+.room[data-controls-enabled="false"] .toolbar { max-height: 0; min-height: 0; padding-block: 0; overflow: hidden; }
 .room[data-hud="on"] .toolbar { opacity: 1; }
+.room[data-idle="true"] .hud-toggle { opacity: 0; visibility: hidden; pointer-events: none; }
+.room[data-idle="true"] .stage, .room[data-idle="true"] .stage * { cursor: none; }
+.room[data-idle="true"] .ant-tooltip { display: none; }
 
 .reaction-menu {
   display: grid;
@@ -191,9 +191,13 @@
   z-index: 2;
   pointer-events: none;
   overflow: hidden;
-  touch-action: none;
+  touch-action: pan-x pan-y pinch-zoom;
+  user-select: none;
 }
+.interaction-overlay.interactive { pointer-events: auto; }
 .interaction-overlay.active { pointer-events: auto; cursor: crosshair; }
+.interaction-overlay[data-tool="cursor"] { cursor: default; }
+.interaction-overlay[data-drawing="true"], .shared-board[data-drawing="true"] { touch-action: none; }
 .drawing-canvas {
   position: absolute;
   inset: 0;
@@ -209,18 +213,24 @@
 .interaction-ping {
   position: absolute;
   z-index: 5;
-  width: 14px;
-  height: 14px;
-  margin: -7px 0 0 -7px;
+  width: 0;
+  height: 0;
   pointer-events: none;
 }
-.interaction-ping-ring {
+.area-ping {
+  position: absolute; width: 40px; height: 40px; left: -20px; top: -20px;
+}
+.area-ping-ring {
   position: absolute;
   inset: 0;
-  border: 2px solid #fff;
+  border: 2px solid #f5d76e;
   border-radius: 50%;
-  box-shadow: 0 0 0 2px rgba(0,0,0,.7), 0 0 18px rgba(255,255,255,.5);
+  box-shadow: 0 0 0 1px rgba(0,0,0,.5);
+  animation: area-ping-pulse .85s ease-out 2 both;
 }
+.area-ping-center { position: absolute; left: 50%; top: 50%; width: 4px; height: 4px; transform: translate(-50%, -50%); background: #f5d76e; box-shadow: 0 0 0 1px #000; border-radius: 50%; }
+@keyframes area-ping-pulse { from { transform: scale(.25); opacity: .8; } to { transform: scale(1); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .area-ping-ring { animation: none; transform: scale(.6); opacity: .65; } }
 .interaction-author {
   position: absolute;
   left: 50%;
@@ -264,7 +274,7 @@
     linear-gradient(rgba(23,23,26,.075) 1px, transparent 1px),
     linear-gradient(90deg, rgba(23,23,26,.075) 1px, transparent 1px);
   background-size: auto, 24px 24px, 24px 24px;
-  touch-action: none;
+  touch-action: pan-x pan-y pinch-zoom;
 }
 :root[data-theme="dark"] .shared-board {
   background-color: #11141a;
@@ -275,6 +285,8 @@
   background-size: auto, 24px 24px, 24px 24px;
 }
 .shared-board.interactive { cursor: crosshair; }
+.shared-board { user-select: none; }
+.shared-board[data-tool="cursor"] { cursor: default; }
 .shared-board-empty {
   position: absolute;
   inset: 0;
@@ -400,17 +412,6 @@
 .toolbar-more-status.reconnecting { color: var(--warning); }
 .toolbar-more-status.disconnected { color: var(--danger); }
 
-.marker-menu {
-  display: grid;
-  gap: 6px;
-  min-width: 170px;
-}
-.marker-menu .ant-btn {
-  display: flex;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 7px;
-}
 .reaction-hint {
   display: block;
   width: 170px;
@@ -419,51 +420,23 @@
   font-size: 10px;
   line-height: 1.35;
 }
-.marker-arrow {
-  display: grid;
-  place-items: center;
-  width: 34px;
-  height: 34px;
-  color: #fff;
-  font-size: 31px;
-  font-weight: 900;
-  line-height: 1;
-  text-shadow: 0 2px 6px rgba(0,0,0,.8);
-  transform: translate(-7px, -7px) rotate(-18deg);
-}
-.marker-number {
-  display: grid;
-  place-items: center;
-  width: 31px;
-  height: 31px;
-  border: 2px solid #fff;
-  border-radius: 50%;
-  background: rgba(0,0,0,.82);
-  color: #fff;
-  font-size: 15px;
-  font-weight: 900;
-  box-shadow: 0 2px 7px rgba(0,0,0,.5);
-  transform: translate(-50%, -50%);
-}
 .shared-cursor {
   position: absolute;
   z-index: 8;
   pointer-events: none;
-  transform: translate(-4px, -3px);
+  transform: translate(-1px, -1px);
   color: #fff;
-  filter: drop-shadow(0 2px 3px rgba(0,0,0,.8));
 }
 .shared-cursor-arrow {
   display: block;
-  font-size: 22px;
-  line-height: 1;
-  transform: rotate(-38deg);
 }
 .shared-cursor .interaction-author {
-  top: 20px;
-  left: 12px;
+  top: 18px;
+  left: 9px;
   max-width: 110px;
+  animation: cursor-label-fade 1.3s ease-out forwards;
 }
+@keyframes cursor-label-fade { 0%, 60% { opacity: .8; } 100% { opacity: 0; } }
 
 .person-tags {
   display: flex;
@@ -595,16 +568,12 @@
 .toolbar .ant-badge { display: inline-flex; }
 
 @media (max-width: 720px) {
-  .join-inline-fields { grid-template-columns: 1fr; gap: 0; }
   .chat-list { max-height: calc(100dvh - 300px); }
   .host-room-actions .ant-btn { flex: 1 1 auto; }
 }
+@media (max-width: 380px) { .join-inline-fields { grid-template-columns: 1fr; gap: 0; } }
 
 /* Positional reactions use top/left now; the legacy layer used bottom. */
 .interaction-reaction { bottom: auto; margin-top: -14px; }
-.marker-arrow,
-.marker-number { position: absolute; left: 50%; top: 50%; }
-.marker-arrow { transform: translate(-50%, -50%) rotate(-18deg); }
-.marker-number { transform: translate(-50%, -50%); }
 .shared-cursor .interaction-author { transform: none; }
 .field-optional { color: var(--ink-soft); font-size: 10px; font-weight: 500; }

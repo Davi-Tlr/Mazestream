@@ -52,13 +52,14 @@ o teto mesmo se varias pessoas tentarem entrar ao mesmo tempo. O padrao A1 e 10:
       - PUBLIC_WSS_URL=${PUBLIC_WSS_URL:-}
       - MAX_ROOMS=2
       - MAX_PARTICIPANTS_PER_ROOM=10
-      # O compose aponta direto para o LiveKit no host, sem hairpin pelo dominio.
-      - LIVEKIT_API_URL=http://host.docker.internal:7880
+      # Vazio: usa PUBLIC_WSS_URL, convertendo ws(s) para http(s).
+      - LIVEKIT_API_URL=${LIVEKIT_API_URL:-}
 ```
 
 Como funciona a checagem: o servidor chama `ListRooms` e `CreateRoom` pela API do
-LiveKit usando `LIVEKIT_API_URL`. O compose usa `host.docker.internal` para falar
-direto com a porta 7880 do host. Se a API nao responder, a emissao de token falha de forma segura com
+LiveKit usando `LIVEKIT_API_URL`, quando definido, ou o endereco HTTP(S) derivado
+de `PUBLIC_WSS_URL`. A rota interna e opcional: `host.docker.internal` nao garante
+que o firewall permita acesso do container a porta 7880 do host. Se a API nao responder, a emissao de token falha de forma segura com
 503; o app nao distribui tokens sem conseguir confirmar os limites.
 
 ## Seguranca (contra flood / DoS / injection)

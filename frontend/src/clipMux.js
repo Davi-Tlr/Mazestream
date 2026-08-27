@@ -10,6 +10,14 @@ function waitForClipStep(promise, signal) {
   return Promise.race([promise, cancelled]).finally(() => signal.removeEventListener("abort", onAbort));
 }
 
+function requireDecoderMetadata(entry, cached, label) {
+  const meta = entry?.meta?.decoderConfig ? entry.meta : cached;
+  if (!meta?.decoderConfig) {
+    throw new Error(`O buffer do clipe não recebeu a configuração de ${label}. Desative e reative os clipes para tentar novamente.`);
+  }
+  return meta;
+}
+
 export async function muxClip(runtime, selection, signal) {
   const {
     BufferTarget, EncodedAudioPacketSource, EncodedVideoPacketSource,
@@ -24,6 +32,9 @@ export async function muxClip(runtime, selection, signal) {
     signal.throwIfAborted();
     const videoSource = new EncodedVideoPacketSource(runtime.videoCodec);
     const hasAudio = !!runtime.audioCodec && selection.audio.length > 0;
+    // Capture the selected interval's config before yielding to live callbacks.
+    const videoMeta = requireDecoderMetadata(selection.video[0], runtime.videoMeta, "vídeo");
+    const audioMeta = hasAudio ? requireDecoderMetadata(selection.audio[0], runtime.audioMeta, "áudio") : null;
     const audioSource = hasAudio ? new EncodedAudioPacketSource(runtime.audioCodec) : null;
     output.addVideoTrack(videoSource);
     if (audioSource) output.addAudioTrack(audioSource);
@@ -41,10 +52,10 @@ export async function muxClip(runtime, selection, signal) {
         timestamp: Math.max(0, entry.packet.timestamp - selection.startTimestamp)
       });
       if (entry.kind === "video") {
-        await wait(videoSource.add(packet, firstVideo ? (entry.meta || runtime.videoMeta) : undefined));
+        await wait(videoSource.add(packet, firstVideo ? videoMeta : undefined));
         firstVideo = false;
       } else if (audioSource) {
-        await wait(audioSource.add(packet, firstAudio ? (entry.meta || runtime.audioMeta) : undefined));
+        await wait(audioSource.add(packet, firstAudio ? audioMeta : undefined));
         firstAudio = false;
       }
     }

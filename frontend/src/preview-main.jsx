@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { App as AntApp, ConfigProvider } from "antd";
 import ptBR from "antd/locale/pt_BR";
@@ -6,7 +6,10 @@ import RoomView from "./ui/RoomView.jsx";
 import { DEFAULT_SETTINGS } from "./constants.js";
 import { createTheme } from "./theme.js";
 import { ThemeProvider, useTheme } from "./theme.jsx";
-import { DRAW_COLORS, DRAW_WIDTHS, newInteractionId } from "./interactions.js";
+import { DRAW_COLORS, DRAW_WIDTHS, INTERACTION_LIFETIME, newInteractionId } from "./interactions.js";
+import { createCursorPublisher, createRemoteCursorStore } from "./sharedCursor.js";
+import { SharedCursorContext } from "./sharedCursorContext.js";
+import { createPingGate, mergeTransientInteraction } from "./pingPolicy.js";
 import "./styles.css";
 import "./interactions.css";
 
@@ -28,25 +31,93 @@ const initialInteractions = [
   { id: "preview-fire", type: "reaction", tile: "board", reaction: "fire", x: 0.88, y: 0.8, size: 0.2, speed: 0.4, drift: 0.25, author: "prévia" }
 ];
 
+// Synthetic, silent source for UI testing only. Never connects to a LiveKit room.
+function usePreviewTile() {
+  const [tile, setTile] = useState(null);
+  useEffect(() => {
+    const canvas = document.createElement("canvas");
+    canvas.width = 1280; canvas.height = 720;
+    const context = canvas.getContext("2d");
+    context.fillStyle = "#0b1018"; context.fillRect(0, 0, 1280, 720);
+    context.strokeStyle = "#263244";
+    for (let x = 0; x < 1280; x += 80) { context.beginPath(); context.moveTo(x, 0); context.lineTo(x, 720); context.stroke(); }
+    for (let y = 0; y < 720; y += 80) { context.beginPath(); context.moveTo(0, y); context.lineTo(1280, y); context.stroke(); }
+    context.fillStyle = "#edf1f6"; context.font = "bold 48px sans-serif"; context.fillText("Prévia da transmissão", 80, 300);
+    context.fillStyle = "#a8b1c0"; context.font = "24px sans-serif"; context.fillText("Clique do meio ou segure para apontar um local", 80, 355);
+    context.fillText("Vídeo sintético · sem conexão com o servidor", 80, 402);
+    const stream = canvas.captureStream(0);
+    const mediaStreamTrack = stream.getVideoTracks()[0];
+    const interval = window.setInterval(() => mediaStreamTrack.requestFrame(), 500);
+    const track = {
+      mediaStreamTrack,
+      attach(element) { element.srcObject = stream; mediaStreamTrack.requestFrame(); },
+      detach(element) { if (element.srcObject === stream) element.srcObject = null; }
+    };
+    setTile({ key: "preview-screen", sid: "preview", identity: "preview-author", pubName: "screen", isScreen: true,
+      isLocal: false, name: "Transmissão de demonstração", author: "Demonstração", track,
+      state: { estado: "ao_vivo", desde: Date.now() - 97000 } });
+    return () => { window.clearInterval(interval); mediaStreamTrack.stop(); };
+  }, []);
+  return tile;
+}
+
 function PreviewRoom() {
+  const previewTile = usePreviewTile();
   const [settings, setSettings] = useState({ ...DEFAULT_SETTINGS });
   const [selected, setSelected] = useState(null);
   const [volumes, setVolumes] = useState({});
   const [peopleSettings, setPeopleSettings] = useState({});
-  const [interactionTool, setInteractionTool] = useState("draw");
+  const [interactionTool, setInteractionTool] = useState(null);
   const [markerStyle, setMarkerStyle] = useState("ring");
   const [pendingReaction, setPendingReaction] = useState(null);
   const [brush, setBrush] = useState({ color: DRAW_COLORS[7], width: DRAW_WIDTHS[2], tool: "pen" });
-  const [boardOpen, setBoardOpen] = useState(true);
+  const [boardOpen, setBoardOpen] = useState(() => new URLSearchParams(window.location.search).get("view") !== "stream");
   const [boardStrokes, setBoardStrokes] = useState(initialStrokes);
   const [interactions, setInteractions] = useState(initialInteractions);
   const [attentionRequest, setAttentionRequest] = useState(null);
   const redoRef = useRef([]);
+  const [cursorStore] = useState(createRemoteCursorStore);
+  const [pingGate] = useState(createPingGate);
+  const [previewIdentity] = useState(newInteractionId);
+  const channelRef = useRef(null);
+  const cursorSenderRef = useRef(null);
+  const transientTimersRef = useRef(new Set());
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
 
   const addTransient = useCallback((item) => {
-    setInteractions((current) => current.concat(item));
-    window.setTimeout(() => setInteractions((current) => current.filter((entry) => entry.id !== item.id)), 3800);
+    setInteractions((current) => mergeTransientInteraction(current, item));
+    const timer = window.setTimeout(() => {
+      transientTimersRef.current.delete(timer);
+      setInteractions((current) => current.filter((entry) => entry.id !== item.id));
+    }, INTERACTION_LIFETIME[item.type] || 3800);
+    transientTimersRef.current.add(timer);
   }, []);
+
+  // Test the real pointer publisher/store between preview tabs, not a delayed
+  // echo of the local mouse. This channel never contacts a LiveKit server.
+  useEffect(() => {
+    const channel = new BroadcastChannel("mazestream-pointer-preview");
+    channelRef.current = channel;
+    const sender = createCursorPublisher((data) => channel.postMessage({ sender: previewIdentity, data }));
+    cursorSenderRef.current = sender;
+    channel.onmessage = ({ data: envelope }) => {
+      if (!envelope?.sender || envelope.sender === previewIdentity || !settingsRef.current.interactionsEnabled || settingsRef.current.pointersEnabled === false) return;
+      const author = "Outro participante";
+      if (envelope.data?.type === "cursor") cursorStore.receive(envelope.data, envelope.sender, author);
+      else if (envelope.data?.type === "ping" && pingGate.accept(envelope.sender)) addTransient({ ...envelope.data, identity: envelope.sender, author });
+    };
+    return () => {
+      sender.dispose(); channel.close(); cursorStore.clear(); pingGate.clear();
+      if (channelRef.current === channel) channelRef.current = null;
+      if (cursorSenderRef.current === sender) cursorSenderRef.current = null;
+      transientTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+      transientTimersRef.current.clear();
+    };
+  }, [previewIdentity, cursorStore, pingGate, addTransient]);
+  useEffect(() => {
+    if (!settings.interactionsEnabled || settings.pointersEnabled === false) cursorStore.hideWhere(() => true);
+  }, [cursorStore, settings.interactionsEnabled, settings.pointersEnabled]);
 
   const addBoardStroke = useCallback((points, color, width, tool, opacity) => {
     setBoardStrokes((current) => current.concat({ id: newInteractionId(), points, color, width, tool, opacity }));
@@ -66,14 +137,19 @@ function PreviewRoom() {
     if (stroke) setBoardStrokes((current) => current.concat(stroke));
   }, []);
 
-  const onPing = useCallback((tile, point, marker) => addTransient({
-    id: newInteractionId(), type: "ping", tile, ...point, marker, author: "você"
-  }), [addTransient]);
+  const onPing = useCallback((tile, point, marker) => {
+    if (!pingGate.accept("local")) return;
+    const data = { id: newInteractionId(), type: "ping", tile, ...point, marker };
+    addTransient({ ...data, identity: previewIdentity, author: "você" });
+    channelRef.current?.postMessage({ sender: previewIdentity, data });
+  }, [addTransient, pingGate, previewIdentity]);
 
   const onCursor = useCallback((tile, point) => {
-    setInteractions((current) => current.filter((item) => !(item.type === "cursor" && item.tile === tile))
-      .concat({ id: "preview-cursor", type: "cursor", tile, ...point, author: "você" }));
+    cursorSenderRef.current?.update(tile, point);
   }, []);
+  const onStroke = useCallback((tile, points, color, width, tool, opacity) => addTransient({
+    id: newInteractionId(), type: "stroke", tile, points, color, width, tool, opacity, author: "você"
+  }), [addTransient]);
 
   const onReaction = useCallback((tile, reaction, point) => addTransient({
     id: newInteractionId(), type: "reaction", tile, reaction, ...point,
@@ -82,8 +158,9 @@ function PreviewRoom() {
 
   return (
     <>
+      <SharedCursorContext.Provider value={cursorStore}>
       <RoomView
-        tiles={[]} audios={[]} people={[]} screenCount={0} totalScreenCount={0} connState="connected"
+        tiles={previewTile ? [previewTile] : []} audios={[]} people={[]} screenCount={0} totalScreenCount={1} connState="connected"
         selected={selected} setSelected={setSelected} volumes={volumes} setVolumes={setVolumes}
         settings={settings} setSettings={setSettings} peopleSettings={peopleSettings}
         onPersonSetting={(name, patch) => setPeopleSettings((current) => ({ ...current, [name]: { ...(current[name] || {}), ...patch } }))}
@@ -96,11 +173,11 @@ function PreviewRoom() {
         micOn={false} camOn={false} currentRoom="preview-local"
         myState={{ estado: "ao_vivo", desde: Date.now() - 97000, titulo: "Prévia das ferramentas" }}
         audioBlocked={false} onEnableAudio={() => {}}
-        interactions={interactions} interactionTool={interactionTool} setInteractionTool={setInteractionTool}
+        interactions={interactions.filter((item) => settings.interactionsEnabled && !(item.type === "ping" && settings.pointersEnabled === false))} interactionTool={interactionTool} setInteractionTool={setInteractionTool}
         markerStyle={markerStyle} setMarkerStyle={setMarkerStyle}
         pendingReaction={pendingReaction} setPendingReaction={setPendingReaction}
         brush={brush} setBrush={setBrush}
-        onPing={onPing} onCursor={onCursor} onStroke={() => {}} onReaction={onReaction}
+        onPing={onPing} onCursor={onCursor} onStroke={onStroke} onReaction={onReaction}
         boardOpen={boardOpen} setBoardOpen={setBoardOpen} boardStrokes={boardStrokes}
         onBoardStroke={addBoardStroke} onBoardUndo={undoBoard} onBoardRedo={redoBoard}
         boardCanUndo={boardStrokes.length > 0} boardCanRedo={redoRef.current.length > 0}
@@ -110,10 +187,11 @@ function PreviewRoom() {
         onPauseLive={() => {}} onResumeLive={() => {}} onLiveTitle={() => {}} onCopyLink={() => {}}
         onToggleMic={() => {}} onToggleCam={() => {}} onLeave={() => {}}
       />
+      </SharedCursorContext.Provider>
       <div style={{ position: "fixed", right: 14, bottom: 78, zIndex: 1000, padding: "7px 11px",
         borderRadius: 10, background: "rgba(15,23,42,.88)", color: "#fff", fontSize: 12,
         boxShadow: "0 8px 24px rgba(0,0,0,.25)" }}>
-        PRÉVIA LOCAL · nada publicado
+        PRÉVIA LOCAL · <a style={{ color: "inherit" }} href="/">Login</a> · <a style={{ color: "inherit" }} href="/preview.html?view=stream">Transmissão</a> · <a style={{ color: "inherit" }} href="/preview.html?view=stream&receiver=1" target="_blank" rel="noreferrer">Outro espectador</a>
       </div>
     </>
   );

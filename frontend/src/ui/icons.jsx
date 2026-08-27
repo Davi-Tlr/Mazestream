@@ -19,6 +19,14 @@ export function Moon(props) {
   );
 }
 
+export function PointerIcon({ fill = "currentColor", stroke = "currentColor", ...props }) {
+  return (
+    <svg viewBox="0 0 18 23" width="1em" height="1em" aria-hidden="true" {...props}>
+      <path d="M1 1L16 13L9 14L6 21Z" fill={fill} stroke={stroke} strokeWidth="1.5" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 export const REACTIONS = [
   { key: "heart", emoji: "❤️", label: "Amei" },
   { key: "laugh", emoji: "😂", label: "Muito bom" },

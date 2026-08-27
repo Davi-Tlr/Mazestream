@@ -28,6 +28,27 @@ Sem `--use-caddy`, o script usa o caminho Nginx/Certbot. Não execute os dois mo
 
 As chaves são geradas no servidor. `.env` e `livekit.yaml` não acompanham o pacote, não devem ser publicados e precisam ser preservados nas atualizações.
 
+## Endereço da API administrativa
+
+O frontend e o relay usam `LIVEKIT_API_URL` quando há um valor explícito. Quando essa variável está vazia ou ausente, derivam o endereço de `PUBLIC_WSS_URL`: `wss://` vira `https://` e `ws://` vira `http://`. O Compose e o instalador deixam o override vazio por padrão. O ambiente local continua usando sua API de loopback.
+
+No self-hosted, o domínio HTTPS deve encaminhar `/twirp/*` ao LiveKit; os proxies gerados pelo instalador já incluem essa rota. As chamadas administrativas continuam exigindo JWT assinado com as credenciais do servidor. Essa escolha altera o caminho das consultas de controle, não os bitrates nem o transporte de mídia.
+
+Uma rota interna, como `http://host.docker.internal:7880`, continua sendo uma opção explícita após validar conectividade. O mapeamento `host-gateway` fornece um endereço, mas não abre o firewall nem altera o endereço em que o LiveKit escuta. Não abra a porta 7880 publicamente para contornar um timeout do container.
+
+### Migrar instalações com o padrão antigo
+
+Atualizar os arquivos do repositório **não substitui o `.env` existente**. Se ele ainda contém `LIVEKIT_API_URL=http://host.docker.internal:7880` e essa rota não responde, confirme a API pelo domínio e então deixe `LIVEKIT_API_URL=` vazio, ou informe explicitamente o mesmo domínio de `PUBLIC_WSS_URL` com esquema HTTPS. Preserve as chaves e não execute `deploy.sh` apenas para essa mudança.
+
+Com o Compose atualizado, aplique a configuração sem rebuild, na pasta e no projeto Compose existentes:
+
+```bash
+sudo docker compose -f docker-compose.yaml -f docker-compose.host-a1.yaml \
+  --profile web up -d --no-deps --force-recreate frontend
+```
+
+Se o relay estiver ativo, recrie-o separadamente com `--profile discord` e serviço `discord-relay`. A aplicação perde seu estado temporário ao ser recriada. Se ainda estiver usando o Compose antigo, configure a URL HTTPS explicitamente: deixá-la vazia ainda acionaria o antigo default interno.
+
 ## Atualizar uma instalação existente
 
 1. Guarde uma cópia recuperável do diretório atual, de `.env`, `livekit.yaml` e da configuração do proxy. Não publique esse backup: contém credenciais.
@@ -65,8 +86,12 @@ A variável `LIVEKIT_SERVER_IMAGE` controla o SFU independentemente da versão d
 
 O relay é opcional. `DISCORD_WEBHOOK_URL` permite alertas; `/banda` também requer `DISCORD_APPLICATION_ID`, `DISCORD_PUBLIC_KEY`, `DISCORD_BOT_TOKEN` e, opcionalmente, `DISCORD_GUILD_ID`. O endpoint de interações é `/discord/interactions` e precisa estar acessível via HTTPS.
 
-O monitor consulta os contadores do LiveKit em `LIVEKIT_METRICS_URL`. A divisão por sala é estimada; o acumulado do relay reinicia com seu processo e não equivale à fatura total da Oracle. Mantenha também o monitoramento da instância. Não exponha Redis, a API administrativa ou a porta de métricas diretamente na internet.
+O monitor consulta os contadores do LiveKit em `LIVEKIT_METRICS_URL`. A divisão por sala é estimada; o acumulado do relay reinicia com seu processo e não equivale à fatura total da Oracle. Mantenha também o monitoramento da instância. Não exponha Redis nem a porta de métricas diretamente na internet; a API administrativa usa o proxy HTTPS e autenticação JWT do LiveKit.
+
+`LIVEKIT_METRICS_URL` é independente de `LIVEKIT_API_URL`. Usar o domínio na API não resolve automaticamente o acesso privado do relay à porta 6789. Valide essa conectividade separadamente, sem publicar as métricas no domínio público.
 
 ## Referência
 
 Consulte os requisitos de rede e implantação na [documentação oficial de self-hosting do LiveKit](https://docs.livekit.io/transport/self-hosting/deployment/). Esta preparação não instalou um runner de CI, agente de deploy ou serviço adicional no servidor.
+
+O contrato e a autenticação de `/twirp/*` estão na [API de salas do LiveKit](https://docs.livekit.io/reference/other/roomservice-api/); o funcionamento de `host-gateway` está na [documentação de rede do Compose](https://docs.docker.com/compose/how-tos/networking/).

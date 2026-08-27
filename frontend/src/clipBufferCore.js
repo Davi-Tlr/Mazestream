@@ -13,7 +13,14 @@ export function appendClipPacket(runtime, kind, packet, meta) {
       || runtime.video.length + runtime.audio.length >= MAX_CLIP_PACKETS) {
     throw new Error("O buffer de clipes atingiu o limite de memória. Desative e reative os clipes para tentar novamente.");
   }
-  runtime[kind].push({ packet: packet.clone(), meta, order: runtime.order++, bytes });
+  // WebCodecs emits decoderConfig only when needed; later metadata may be {}.
+  // Keep an owned snapshot with each packet so pruning or a newer config cannot
+  // invalidate an export. Packets sharing a config share this small snapshot.
+  const metaKey = `${kind}Meta`;
+  if (meta?.decoderConfig) {
+    runtime[metaKey] = { decoderConfig: structuredClone(meta.decoderConfig) };
+  }
+  runtime[kind].push({ packet: packet.clone(), meta: runtime[metaKey], order: runtime.order++, bytes });
   runtime.bufferedBytes += bytes;
 }
 

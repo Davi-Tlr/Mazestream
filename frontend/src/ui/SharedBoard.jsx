@@ -1,30 +1,19 @@
 import { lazy, Suspense, useRef, useState, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { REACTION_EMOJIS } from "../interactions.js";
+import { useAreaPing } from "../useAreaPing.js";
+import AreaPing from "./AreaPing.jsx";
+import SharedCursors from "./SharedCursors.jsx";
+import { useSharedCursor } from "../useSharedCursor.js";
 
 const DrawingCanvas = lazy(() => import("./DrawingCanvas.jsx"));
 
-function Marker({ item }) {
-  const marker = item.marker || "ring";
-  return (
-    <motion.div key={item.id} className={"interaction-ping board-ping marker-" + marker}
-      style={{ left: item.x * 100 + "%", top: item.y * 100 + "%" }}
-      initial={{ scale: 0.3, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 1.5, opacity: 0 }}>
-      {marker === "ring" && <span className="interaction-ping-ring" />}
-      {marker === "arrow" && <span className="marker-arrow">➜</span>}
-      {["1", "2", "3"].includes(marker) && <span className="marker-number">{marker}</span>}
-      <span className="interaction-author">{item.author}</span>
-    </motion.div>
-  );
-}
-
 export default function SharedBoard({
   strokes, tool, brush, interactions, markerStyle = "ring", pendingReaction,
-  onStroke, onPing, onCursor, onReactionAt
+  onStroke, onPing, onCursor, onReactionAt, canInteract = false
 }) {
   const areaRef = useRef(null);
   const currentRef = useRef(null);
-  const lastCursorRef = useRef(0);
   const [liveStroke, setLiveStroke] = useState(null);
   const color = (brush && brush.color) || "#111111";
   const width = (brush && brush.width) || 5;
@@ -44,31 +33,38 @@ export default function SharedBoard({
     if (x < 0 || x > 1 || y < 0 || y > 1) return null;
     return [x, y];
   }, []);
+  const getPingPoint = useCallback((event) => {
+    const point = getPoint(event);
+    return point ? { x: point[0], y: point[1] } : null;
+  }, [getPoint]);
+  const ping = useAreaPing({ getPoint: getPingPoint, onPing, enabled: canInteract, tool });
+  const cursor = useSharedCursor({ getPoint: getPingPoint, onCursor, enabled: canInteract && tool === "cursor", surfaceKey: "board" });
 
   function handleDown(event) {
+    cursor.move(event);
+    if (ping.down(event, canInteract, tool)) return;
+    if (!canInteract || event.button !== 0 || event.isPrimary === false) return;
     if (!tool) return;
     event.stopPropagation();
     const point = getPoint(event);
     if (!point) return;
-    if (tool === "point") { onPing({ x: point[0], y: point[1] }, markerStyle); return; }
     if (tool === "reaction") { if (pendingReaction) onReactionAt({ x: point[0], y: point[1] }, pendingReaction); return; }
     if (!drawing) return;
+    event.currentTarget.setPointerCapture?.(event.pointerId);
     const points = [point];
     currentRef.current = points;
     setLiveStroke({ points, color, width, tool: drawTool, opacity });
   }
 
   function handleMove(event) {
+    ping.move(event);
+    cursor.move(event);
+    if (!canInteract || event.isPrimary === false) return;
     if (!tool) return;
     const point = getPoint(event);
     if (!point) return;
     if (tool === "cursor") {
       event.stopPropagation();
-      const now = performance.now();
-      if (now - lastCursorRef.current >= 55) {
-        lastCursorRef.current = now;
-        onCursor({ x: point[0], y: point[1] });
-      }
       return;
     }
     if (!drawing || !currentRef.current) return;
@@ -86,6 +82,8 @@ export default function SharedBoard({
   }
 
   function handleUp(event) {
+    if (event.pointerType === "touch") cursor.hide();
+    if (ping.up(event)) return;
     if (!drawing || !currentRef.current) return;
     event.stopPropagation();
     const points = currentRef.current;
@@ -94,14 +92,24 @@ export default function SharedBoard({
     if (points.length > 1) onStroke(points, color, width, drawTool, opacity);
   }
 
+  function cancelGesture() {
+    ping.cancel();
+    cursor.hide();
+    currentRef.current = null;
+    setLiveStroke(null);
+  }
+
   const pings = (interactions || []).filter((item) => item.type === "ping");
-  const cursors = (interactions || []).filter((item) => item.type === "cursor");
   const reactions = (interactions || []).filter((item) => item.type === "reaction");
 
   return (
     <div ref={areaRef} className={"shared-board" + (tool ? " interactive" : "")}
-      onMouseDown={handleDown} onMouseMove={handleMove} onMouseUp={handleUp} onMouseLeave={handleUp}
-      onTouchStart={handleDown} onTouchMove={handleMove} onTouchEnd={handleUp} onTouchCancel={handleUp}>
+      data-drawing={drawing ? "true" : "false"} data-tool={tool || "none"}
+      onPointerDown={handleDown} onPointerMove={handleMove} onPointerUp={handleUp}
+      onPointerEnter={cursor.move} onPointerLeave={() => { cursor.hide(); ping.cancel(); }}
+      onPointerCancel={cancelGesture} onLostPointerCapture={cancelGesture}
+      onClick={ping.click} onContextMenu={ping.contextMenu}
+      onAuxClick={(event) => { if (canInteract && event.button === 1) { event.preventDefault(); event.stopPropagation(); } }}>
       <Suspense fallback={null}>
         <DrawingCanvas actions={strokes || []} liveAction={liveStroke} />
       </Suspense>
@@ -110,16 +118,8 @@ export default function SharedBoard({
         <div className="shared-board-empty">Quadro compartilhado. Escolha uma ferramenta e desenhe.</div>
       )}
 
-      <AnimatePresence>{pings.map((ping) => <Marker key={ping.id} item={ping} />)}</AnimatePresence>
-      <AnimatePresence>
-        {cursors.map((cursor) => (
-          <motion.div key={cursor.id} className="shared-cursor board-cursor"
-            style={{ left: cursor.x * 100 + "%", top: cursor.y * 100 + "%" }}
-            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-            <span className="shared-cursor-arrow">➤</span><span className="interaction-author">{cursor.author}</span>
-          </motion.div>
-        ))}
-      </AnimatePresence>
+      <AnimatePresence>{pings.map((ping) => <AreaPing key={ping.id} item={ping} />)}</AnimatePresence>
+      <SharedCursors tile="board" />
       <AnimatePresence>
         {reactions.map((reaction) => {
           const emoji = REACTION_EMOJIS[reaction.reaction];

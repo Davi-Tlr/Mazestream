@@ -23,6 +23,9 @@ import {
   REACTION_EMOJIS, REACTION_TO_WIRE, REACTION_FROM_WIRE, LEGACY_TYPE_MAP, MARKER_STYLES
 } from "./interactions.js";
 import JoinScreen from "./ui/JoinScreen.jsx";
+import { createCursorPublisher, createRemoteCursorStore } from "./sharedCursor.js";
+import { SharedCursorContext } from "./sharedCursorContext.js";
+import { createPingGate, mergeTransientInteraction } from "./pingPolicy.js";
 
 // The login screen does not need the full room toolbar, Konva board or motion
 // components. Keep that surface in a deferred chunk so first paint stays light.
@@ -252,11 +255,12 @@ export default function App() {
   const [boardOpen, setBoardOpen] = useState(false);
   const [attentionRequest, setAttentionRequest] = useState(null);
   const interactionTimersRef = useRef(new Map());
-  const cursorTimersRef = useRef(new Map());
+  const [cursorStore] = useState(createRemoteCursorStore);
+  const [pingGate] = useState(createPingGate);
   const inboundDataBudgetRef = useRef(new Map());
 
   const addInteraction = useCallback((item) => {
-    setInteractions((list) => list.filter((current) => current.id !== item.id).concat(item).slice(-80));
+    setInteractions((list) => mergeTransientInteraction(list, item));
     const lifetime = INTERACTION_LIFETIME[item.type] || 4000;
     const timers = interactionTimersRef.current;
     if (timers.has(item.id)) window.clearTimeout(timers.get(item.id));
@@ -266,23 +270,37 @@ export default function App() {
     }, lifetime));
   }, []);
 
-  const upsertCursor = useCallback((item) => {
-    setInteractions((list) => list.filter((current) => current.id !== item.id).concat(item).slice(-80));
-    const timers = cursorTimersRef.current;
-    if (timers.has(item.id)) window.clearTimeout(timers.get(item.id));
-    timers.set(item.id, window.setTimeout(() => {
-      timers.delete(item.id);
-      setInteractions((list) => list.filter((current) => current.id !== item.id));
-    }, INTERACTION_LIFETIME.cursor));
-  }, []);
-
   useEffect(() => () => {
     interactionTimersRef.current.forEach((timer) => window.clearTimeout(timer));
     interactionTimersRef.current.clear();
-    cursorTimersRef.current.forEach((timer) => window.clearTimeout(timer));
-    cursorTimersRef.current.clear();
     inboundDataBudgetRef.current.clear();
   }, []);
+
+  useEffect(() => {
+    const remove = (participant) => { cursorStore.remove(participant.identity); pingGate.remove(participant.identity); inboundDataBudgetRef.current.delete(participant.identity); };
+    const reset = () => cursorStore.hideWhere(() => true);
+    const expire = () => { if (!document.hidden) cursorStore.expire(); };
+    room?.on(RoomEvent.ParticipantDisconnected, remove);
+    room?.on(RoomEvent.Reconnecting, reset);
+    document.addEventListener("visibilitychange", expire);
+    return () => {
+      room?.off(RoomEvent.ParticipantDisconnected, remove);
+      room?.off(RoomEvent.Reconnecting, reset);
+      document.removeEventListener("visibilitychange", expire);
+      cursorStore.clear(); pingGate.clear();
+    };
+  }, [room, cursorStore, pingGate]);
+
+  useEffect(() => {
+    cursorStore.hideWhere((item) => !settings.interactionsEnabled || settings.pointersEnabled === false
+      || getPersonSettings(peopleSettings, item.identity, item.author).interactionsHidden
+      || room?.remoteParticipants.get(item.identity)?.permissions?.canPublishData === false);
+  }, [cursorStore, settings.interactionsEnabled, settings.pointersEnabled, peopleSettings, room, permissionVer]);
+
+  const visibleInteractions = useMemo(() => interactions.filter((item) => settings.interactionsEnabled
+    && !(item.type === "ping" && settings.pointersEnabled === false)
+    && !getPersonSettings(peopleSettings, item.identity, item.author).interactionsHidden),
+  [interactions, settings.interactionsEnabled, settings.pointersEnabled, peopleSettings]);
 
   const lastInteractionErrorRef = useRef(0);
   const sendData = useCallback((data, reliable = false, destinations) => {
@@ -307,17 +325,25 @@ export default function App() {
   );
 
   const sendPing = useCallback((tile, point, marker = "ring") => {
-    if (!tile || !point) return;
+    if (!localCanPublishData || !tile || !point || !pingGate.accept("local")) return;
     const safeMarker = MARKER_STYLES.includes(marker) ? marker : "ring";
-    const item = { type: "ping", id: newInteractionId(), tile, x: point.x, y: point.y, marker: safeMarker, author: "você" };
+    const item = { type: "ping", id: newInteractionId(), tile, x: point.x, y: point.y, marker: safeMarker, author: "você", identity: room?.localParticipant.identity };
     addInteraction(item);
     sendData({ type: "ping", t: "ping", id: item.id, tile, x: item.x, y: item.y, marker: safeMarker });
-  }, [addInteraction, sendData]);
+  }, [addInteraction, sendData, localCanPublishData, pingGate, room]);
 
+  const cursorSequenceRef = useRef(0);
+  const cursorSenderRef = useRef(null);
+  useEffect(() => {
+    const sender = createCursorPublisher((data, reliable) => room?.state === "connected" ? sendData(data, reliable) : false,
+      { nextSequence: () => ++cursorSequenceRef.current });
+    cursorSenderRef.current = sender;
+    return () => { sender.dispose(); if (cursorSenderRef.current === sender) cursorSenderRef.current = null; };
+  }, [room, sendData]);
+  useEffect(() => { if (connState !== "connected") cursorSenderRef.current?.hide(); }, [connState]);
   const sendCursor = useCallback((tile, point) => {
-    if (!tile || !point) return;
-    sendData({ type: "cursor", tile, x: point.x, y: point.y }, false);
-  }, [sendData]);
+    cursorSenderRef.current?.update(tile, point);
+  }, []);
 
   const sendStroke = useCallback((tile, points, color, width, tool = "pen", opacity) => {
     if (!tile) return;
@@ -366,6 +392,9 @@ export default function App() {
       if (!data) return;
       const type = data.type || LEGACY_TYPE_MAP[data.t];
       if (typeof type !== "string" || type.startsWith("board-")) return;
+      if ((type === "cursor" || type === "ping") && (settings.pointersEnabled === false
+          || !participant?.identity || participant.identity === room.localParticipant.identity
+          || participant.permissions?.canPublishData === false)) return;
 
       // Data packets are intentionally lightweight, but a participant can
       // still flood a browser with valid packets. Keep cursors responsive while
@@ -390,17 +419,14 @@ export default function App() {
       const tile = typeof data.tile === "string" ? data.tile : "";
       if (!tile) return;
       if (type === "ping" && Number.isFinite(data.x) && Number.isFinite(data.y)) {
+        if (!pingGate.accept(sender)) return;
         addInteraction({
           type: "ping", id: String(data.id || newInteractionId()), tile,
           x: Math.max(0, Math.min(1, data.x)), y: Math.max(0, Math.min(1, data.y)),
-          marker: MARKER_STYLES.includes(data.marker) ? data.marker : "ring", author
+          marker: MARKER_STYLES.includes(data.marker) ? data.marker : "ring", author, identity: sender
         });
-      } else if (type === "cursor" && Number.isFinite(data.x) && Number.isFinite(data.y)) {
-        const identity = participant ? participant.identity : author;
-        upsertCursor({
-          type: "cursor", id: "cursor:" + identity + ":" + tile, tile,
-          x: Math.max(0, Math.min(1, data.x)), y: Math.max(0, Math.min(1, data.y)), author
-        });
+      } else if (type === "cursor") {
+        cursorStore.receive(data, sender, author);
       } else if (type === "stroke") {
         const drawing = sanitizeDrawAction(data);
         if (drawing.points.length > 1) addInteraction({
@@ -425,7 +451,7 @@ export default function App() {
 
     room.on(RoomEvent.DataReceived, onData);
     return () => { room.off(RoomEvent.DataReceived, onData); };
-  }, [room, settings.interactionsEnabled, peopleSettings, addInteraction, upsertCursor]);
+  }, [room, settings.interactionsEnabled, settings.pointersEnabled, peopleSettings, addInteraction, cursorStore, pingGate]);
 
   // ---- Room features: chat, temporary files, host controls and presenter ---
   const addChatMessage = useCallback((item) => {
@@ -755,6 +781,7 @@ export default function App() {
 
   return (
     <Suspense fallback={<div className="room-loading" role="status">Abrindo a sala…</div>}>
+      <SharedCursorContext.Provider value={cursorStore}>
       <RoomView
       tiles={tiles}
       audios={audios}
@@ -802,7 +829,7 @@ export default function App() {
       myState={myState}
       audioBlocked={audioBlocked}
       onEnableAudio={enableAudio}
-      interactions={interactions}
+      interactions={visibleInteractions}
       interactionTool={interactionTool}
       setInteractionTool={setInteractionTool}
       markerStyle={markerStyle}
@@ -839,6 +866,7 @@ export default function App() {
       onToggleCam={toggleCam}
         onLeave={leave}
       />
+      </SharedCursorContext.Provider>
     </Suspense>
   );
 }

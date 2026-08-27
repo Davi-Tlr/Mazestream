@@ -1,5 +1,7 @@
 // Lightweight LiveKit data-channel protocol for pointers, drawings, reactions,
 // the shared board and "look here" invitations. Nothing here becomes media.
+import { PING_TTL_MS } from "./pingPolicy.js";
+import { CURSOR_TTL_MS } from "./sharedCursor.js";
 
 export const INTERACTION_TOPIC = "maze";
 
@@ -24,9 +26,10 @@ export function encodeInteractionForTransport(value, targetBytes = 12 * 1024) {
 }
 
 export function prepareInteractionPublication(data, reliable = false, destinationIdentities) {
-  // A stroke is emitted once on pointer-up, not as a stream of cursor samples.
-  // Retransmit that bounded final result; keep high-frequency pointers lossy.
-  const isReliable = reliable || data.type === "stroke" || data.t === "risco";
+  // Final strokes and area pings are single actions, not a stream of samples.
+  // Retransmit those bounded results; keep high-frequency cursors lossy.
+  const isReliable = reliable || data.type === "stroke" || data.t === "risco" || data.type === "ping" || data.t === "ping"
+    || (data.type === "cursor" && data.visible === false);
   return {
     payload: encodeInteractionForTransport(data, isReliable ? 12 * 1024 : 1300),
     options: {
@@ -85,8 +88,8 @@ export const DRAW_TOOL_LABELS = {
   eraser: "Borracha"
 };
 export const STREAM_DRAWING_TTL_MS = 10000;
-export const INTERACTION_LIFETIME = { ping: 4200, stroke: STREAM_DRAWING_TTL_MS, reaction: 4800, cursor: 1400 };
-export const MARKER_STYLES = ["ring", "arrow", "1", "2", "3"];
+export const INTERACTION_LIFETIME = { ping: PING_TTL_MS, stroke: STREAM_DRAWING_TTL_MS, reaction: 4800, cursor: CURSOR_TTL_MS };
+export const MARKER_STYLES = ["ring"];
 
 export const REACTION_EMOJIS = {
   heart: "❤️",

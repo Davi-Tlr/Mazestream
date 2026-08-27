@@ -47,7 +47,8 @@ services:
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:-}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-}
       - PUBLIC_WSS_URL=${PUBLIC_WSS_URL:-}
-      - LIVEKIT_API_URL=${LIVEKIT_API_URL:-http://host.docker.internal:7880}
+      # Vazio: o backend deriva HTTP(S) de PUBLIC_WSS_URL. Endereco interno e opcional.
+      - LIVEKIT_API_URL=${LIVEKIT_API_URL:-}
       - MAX_ROOMS=${MAX_ROOMS:-2}
       - MAX_PARTICIPANTS_PER_ROOM=${MAX_PARTICIPANTS_PER_ROOM:-10}
       - TOKENS_POR_SEG=${TOKENS_POR_SEG:-20}
@@ -75,7 +76,8 @@ services:
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:-}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-}
       - PUBLIC_WSS_URL=${PUBLIC_WSS_URL:-}
-      - LIVEKIT_API_URL=${LIVEKIT_API_URL:-http://host.docker.internal:7880}
+      # Mesmo padrao do frontend; nao pressupoe acesso Docker -> host na porta 7880.
+      - LIVEKIT_API_URL=${LIVEKIT_API_URL:-}
       - LIVEKIT_METRICS_URL=${LIVEKIT_METRICS_URL:-http://host.docker.internal:6789/metrics}
       - DISCORD_APPLICATION_ID=${DISCORD_APPLICATION_ID:-}
       - DISCORD_PUBLIC_KEY=${DISCORD_PUBLIC_KEY:-}

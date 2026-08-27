@@ -1,6 +1,6 @@
-import { useState, useRef, useEffect, useMemo, useCallback, memo } from "react";
+import { useState, useRef, useEffect, useMemo, useCallback, memo, forwardRef } from "react";
 import { LayoutGroup, AnimatePresence, motion } from "framer-motion";
-import { Button, Drawer, Switch, Select, Segmented, Input, Slider, Tag, Empty, Tooltip, Popover, Badge } from "antd";
+import { Button, ConfigProvider, Drawer, Switch, Select, Segmented, Input, Slider, Tag, Empty, Tooltip, Popover, Badge } from "antd";
 import {
   DesktopOutlined, StopOutlined, AudioOutlined, AudioMutedOutlined,
   VideoCameraOutlined, VideoCameraAddOutlined, SettingOutlined, TeamOutlined, LogoutOutlined,
@@ -9,19 +9,20 @@ import {
   ClearOutlined, BorderOutlined, NotificationOutlined, DeleteOutlined,
   EyeOutlined, EyeInvisibleOutlined, MessageOutlined, DownOutlined, UpOutlined,
   CommentOutlined, UploadOutlined, CrownOutlined, PushpinOutlined, ScissorOutlined,
-  LockOutlined, UnlockOutlined, UserDeleteOutlined, DragOutlined, ArrowRightOutlined,
+  LockOutlined, UnlockOutlined, UserDeleteOutlined,
   UndoOutlined, RedoOutlined, EllipsisOutlined
 } from "@ant-design/icons";
 import VideoTile from "./VideoTile.jsx";
 import AudioSink from "./AudioSink.jsx";
 import SharedBoard from "./SharedBoard.jsx";
-import { Sun, Moon, REACTIONS } from "./icons.jsx";
+import { Sun, Moon, PointerIcon, REACTIONS } from "./icons.jsx";
 import { useTheme } from "../theme.jsx";
 import { fmtDuration } from "../state.js";
 import { volumeKey, getPersonSettings } from "../collect.js";
-import { DRAW_COLORS, DRAW_WIDTHS, DRAW_TOOLS, DRAW_TOOL_LABELS, MARKER_STYLES } from "../interactions.js";
+import { DRAW_COLORS, DRAW_WIDTHS, DRAW_TOOLS, DRAW_TOOL_LABELS } from "../interactions.js";
 import { ROOM_PRESETS, PRESET_OPTIONS } from "../roomFeatures.js";
 import { CONTENT_OPTIONS, SEND_OPTIONS, RECEIVE_OPTIONS, MAX_SCREENS, QUALITY_LABELS } from "../constants.js";
+import { useIdleControls } from "../useIdleControls.js";
 
 const STATUS_MAP = {
   idle: ["Conectando", "reconnecting"], connecting: ["Conectando", "reconnecting"],
@@ -30,13 +31,13 @@ const STATUS_MAP = {
 };
 const QUALITY_COLOR = { excellent: "success", good: "green", poor: "warning", lost: "error", unknown: "default" };
 
-function Touch({ children }) {
+const Touch = forwardRef(function Touch({ children, ...props }, ref) {
   return (
-    <motion.span style={{ display: "inline-flex" }} whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.92 }}>
+    <motion.span {...props} ref={ref} style={{ display: "inline-flex" }} whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.92 }}>
       {children}
     </motion.span>
   );
-}
+});
 
 function ChatText({ text }) {
   const parts = String(text || "").split(/(https?:\/\/[^\s]+)/g);
@@ -68,7 +69,7 @@ const EMPTY_INTERACTIONS = Object.freeze([]);
 const MemoTile = memo(function MemoTile({
   tile, destaque, interactions, interactionTool, markerStyle, pendingReaction, brush,
   mostrarVolume, volume, onSelectTile, onSetVolume, onToggleMute, onStopBroadcast,
-  onPingTile, onCursorTile, onStrokeTile, onReactionTile
+  onPingTile, onCursorTile, onStrokeTile, onReactionTile, controlsAwake, canInteract
 }) {
   const volKey = volumeKey(tile.sid, tile.pubName);
   const onSelect = useCallback(() => onSelectTile(tile.key), [onSelectTile, tile.key]);
@@ -101,6 +102,8 @@ const MemoTile = memo(function MemoTile({
     onCursor={onCursor}
     onStroke={onStroke}
     onReactionAt={onReactionAt}
+    controlsAwake={controlsAwake}
+    canInteract={canInteract}
   />;
 });
 
@@ -146,9 +149,18 @@ export default function RoomView(props) {
   });
   const [titleLocal, setTitleLocal] = useState(myState ? myState.titulo : "");
   const [hudEnabled, setHudEnabled] = useState(true);
-  const [idleFullscreen, setIdleFullscreen] = useState(false);
+  const [openPopover, setOpenPopover] = useState(null);
+  const [hudTipOpen, setHudTipOpen] = useState(false);
   const roomRef = useRef(null);
   const theme = useTheme();
+  const idle = useIdleControls(roomRef, connectionsOpen || settingsOpen || chatOpen || !!openPopover || (!boardOpen && tiles.length === 0));
+  const hudVisible = hudEnabled && !idle;
+  useEffect(() => { if (idle) setHudTipOpen(false); }, [idle]);
+  const popoverProps = (key) => ({
+    open: openPopover === key,
+    onOpenChange: (open) => setOpenPopover(open ? key : null),
+    getPopupContainer: () => roomRef.current || document.body
+  });
 
   const [nowDrawer, setNowDrawer] = useState(Date.now());
   useEffect(() => {
@@ -187,7 +199,6 @@ export default function RoomView(props) {
   }, [localCanPublishData, setInteractionTool, setPendingReaction]);
 
   const isLive = myState && (myState.estado === "ao_vivo" || myState.estado === "pausado");
-  const isFullscreenMode = layoutMode === "fullscreen-app" || layoutMode === "fullscreen-pc";
 
   useEffect(() => {
     function onFs() {
@@ -199,28 +210,8 @@ export default function RoomView(props) {
     return () => document.removeEventListener("fullscreenchange", onFs);
   }, []);
 
-  useEffect(() => {
-    if (!isFullscreenMode) { setIdleFullscreen(false); return; }
-    let timeout = window.setTimeout(() => setIdleFullscreen(true), 2600);
-    function wakeHud() {
-      setIdleFullscreen(false);
-      window.clearTimeout(timeout);
-      timeout = window.setTimeout(() => setIdleFullscreen(true), 2600);
-    }
-    window.addEventListener("mousemove", wakeHud);
-    window.addEventListener("touchstart", wakeHud);
-    window.addEventListener("keydown", wakeHud);
-    return () => {
-      window.clearTimeout(timeout);
-      window.removeEventListener("mousemove", wakeHud);
-      window.removeEventListener("touchstart", wakeHud);
-      window.removeEventListener("keydown", wakeHud);
-    };
-  }, [isFullscreenMode]);
-
-  const hudVisible = hudEnabled && !(isFullscreenMode && idleFullscreen);
-
   const goFullscreen = useCallback(async () => {
+    setOpenPopover(null);
     try {
       if (document.fullscreenElement) {
         await document.exitFullscreen();
@@ -235,6 +226,7 @@ export default function RoomView(props) {
   }, []);
 
   const switchMode = useCallback((mode) => {
+    setOpenPopover(null);
     if (mode === "fullscreen-pc") { goFullscreen(); return; }
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
     setLayoutMode(mode);
@@ -262,6 +254,7 @@ export default function RoomView(props) {
     return grouped;
   }, [interactions]);
   const boardInteractions = interactionsByTile.get("board") || EMPTY_INTERACTIONS;
+  const onBoardCursor = useCallback((point) => onCursor("board", point), [onCursor]);
 
   const volCurrent = useCallback((key) => volumes[key] || { value: 100, muted: !!settings.startMuted }, [volumes, settings.startMuted]);
   const setVol = useCallback((key, pct) => setVolumes((previous) => ({ ...previous, [key]: { value: pct, muted: false } })), [setVolumes]);
@@ -275,12 +268,15 @@ export default function RoomView(props) {
   useEffect(() => {
     function onKey(event) {
       const el = event.target;
-      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable || el.closest?.('[role="slider"], [role="combobox"], .ant-select'))) return;
       const key = event.key.toLowerCase();
+      if (event.repeat && key !== "arrowup" && key !== "arrowdown") return;
+      if (key === "escape" && openPopover) { event.preventDefault(); setOpenPopover(null); return; }
       if (key === "f") { event.preventDefault(); goFullscreen(); }
       else if (key === "t") { event.preventDefault(); switchMode(layoutMode === "theater" ? "default" : "theater"); }
       else if (key === "m") { event.preventDefault(); setSettings((current) => ({ ...current, muteAll: !current.muteAll })); }
-      else if (key === "h") { event.preventDefault(); setHudEnabled((value) => !value); }
+      else if (key === "h") { event.preventDefault(); setOpenPopover(null); setHudTipOpen(false); setHudEnabled((value) => !value); }
       else if (key >= "1" && key <= "9") {
         const tile = tiles[Number(key) - 1];
         if (tile) { event.preventDefault(); setBoardOpen(false); setSelected(tile.key); }
@@ -297,7 +293,7 @@ export default function RoomView(props) {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [goFullscreen, switchMode, layoutMode, setSettings, tiles, selTile, boardOpen, volCurrent, setVol, setBoardOpen, setSelected]);
+  }, [goFullscreen, switchMode, layoutMode, setSettings, tiles, selTile, boardOpen, volCurrent, setVol, setBoardOpen, setSelected, openPopover]);
 
   const selectTile = useCallback((key) => {
     setBoardOpen(false);
@@ -326,9 +322,11 @@ export default function RoomView(props) {
         onCursorTile={onCursor}
         onStrokeTile={onStroke}
         onReactionTile={onReaction}
+        controlsAwake={hudVisible}
+        canInteract={localCanPublishData}
       />
     );
-  }, [selectTile, volCurrent, setVol, toggleMute, onStopBroadcast, interactionsByTile, interactionTool, markerStyle, pendingReaction, brush, onPing, onCursor, onStroke, onReaction]);
+  }, [selectTile, volCurrent, setVol, toggleMute, onStopBroadcast, interactionsByTile, interactionTool, markerStyle, pendingReaction, brush, onPing, onCursor, onStroke, onReaction, hudVisible, localCanPublishData]);
 
   const [statusText, statusClass] = STATUS_MAP[connState] || STATUS_MAP.connecting;
   const layoutBtns = [
@@ -352,7 +350,7 @@ export default function RoomView(props) {
     if (file) await onShareFile(file);
   }
 
-  const markerLabels = { ring: "Círculo", arrow: "Seta", "1": "Número 1", "2": "Número 2", "3": "Número 3" };
+  const activeLiveState = !boardOpen && selTile ? selTile.state : null;
 
   const drawingInspector = (
     <div className="drawing-inspector">
@@ -439,7 +437,8 @@ export default function RoomView(props) {
   );
 
   return (
-    <div className="room" data-mode={layoutMode} data-hud={hudVisible ? "on" : "off"} ref={roomRef}>
+    <div className="room" data-mode={layoutMode} data-hud={hudVisible ? "on" : "off"}
+      data-idle={idle ? "true" : "false"} data-controls-enabled={hudEnabled ? "true" : "false"} ref={roomRef}>
       <AnimatePresence>
         {attentionRequest && (
           <motion.div className="attention-banner"
@@ -473,8 +472,9 @@ export default function RoomView(props) {
           <Tag>{ROOM_PRESETS[roomPreset]?.label || "Livre"}</Tag>
           {roomLocked && <Tag icon={<LockOutlined />}>PIN</Tag>}
           {presenter && <Tag color="processing" icon={<PushpinOutlined />}>DESTAQUE DO HOST</Tag>}
-          <LiveTimer desde={myState && myState.desde} estado={myState && myState.estado} />
-          {myState && myState.estado === "pausado" && (
+          {selTile && !boardOpen && <span className="active-stream-name" title={selTile.name}>{selTile.author || selTile.name}</span>}
+          <LiveTimer desde={activeLiveState?.desde} estado={activeLiveState?.estado} />
+          {activeLiveState?.estado === "pausado" && (
             <span className="live-pill paused"><PauseOutlined /> EM PAUSA</span>
           )}
           <span className="viewers"><TeamOutlined /> {people.length}</span>
@@ -483,10 +483,11 @@ export default function RoomView(props) {
       </header>
 
       <div className="content">
-        <Tooltip title={hudVisible ? "Esconder controles (H)" : "Mostrar controles (H)"} placement="left">
+        <Tooltip title={hudEnabled ? "Esconder controles (H)" : "Mostrar controles (H)"} placement="left"
+          open={!idle && hudTipOpen} onOpenChange={setHudTipOpen}>
           <Button className="hud-toggle" size="small" icon={hudVisible ? <DownOutlined /> : <UpOutlined />}
             aria-label={hudVisible ? "Esconder controles" : "Mostrar controles"}
-            onClick={() => setHudEnabled((value) => !value)} />
+            onClick={() => { setOpenPopover(null); setHudTipOpen(false); setHudEnabled((value) => !value); }} />
         </Tooltip>
         <LayoutGroup>
           <main className="stage">
@@ -498,9 +499,10 @@ export default function RoomView(props) {
                 interactions={boardInteractions}
                 markerStyle={markerStyle}
                 pendingReaction={pendingReaction}
+                canInteract={localCanPublishData}
                 onStroke={onBoardStroke}
                 onPing={(point, marker) => onPing("board", point, marker)}
-                onCursor={(point) => onCursor("board", point)}
+                onCursor={onBoardCursor}
                 onReactionAt={(point, reaction) => onReaction("board", reaction, point)}
               />
             ) : selTile ? renderTile(selTile, true) : (
@@ -526,6 +528,7 @@ export default function RoomView(props) {
           personVolume={getPersonSettings(peopleSettings, audio.ownerIdentity, audio.owner).volume} />
       ))}
 
+      <ConfigProvider getPopupContainer={(trigger) => trigger?.closest(".room") || document.body}>
       <div className="toolbar">
         <span className="control-cluster media-controls">
           <Touch><Button className="share-control" type="primary" icon={<DesktopOutlined />}
@@ -550,13 +553,13 @@ export default function RoomView(props) {
               type={camOn ? "primary" : "default"} aria-label="Câmera" onClick={onToggleCam} /></Touch>
           </Tooltip>
 
-          <Popover trigger="click" placement="top" content={
+          <Popover {...popoverProps("clip")} trigger="click" placement="top" content={
             <div className="clip-menu">
               <div className="clip-title">Clipe instantâneo</div>
               <div className="clip-meta">{clipTargetName || "Nenhuma transmissão"}</div>
               {!clipEnabled ? (
                 <>
-                  <span className="clip-note">O buffer local fica desligado para não disputar CPU com a transmissão.</span>
+                  <span className="clip-note">Grava continuamente no seu navegador enquanto estiver ativo. Usa CPU/GPU local; o consumo varia conforme o dispositivo.</span>
                   <Button block size="small" type="primary" onClick={onToggleClipBuffer}>Ativar buffer para esta tela</Button>
                 </>
               ) : (
@@ -589,28 +592,17 @@ export default function RoomView(props) {
         </span>
 
         <span className="interaction-tools">
-          <Tooltip title="Mostrar seu cursor para a sala">
+          <Tooltip title="Compartilhar ponteiro: aparece só dentro do vídeo ou quadro e some ao sair">
             <Button disabled={!localCanPublishData || !targetInteraction} type={interactionTool === "cursor" ? "primary" : "default"}
-              icon={<DragOutlined />} aria-label="Compartilhar cursor"
+              icon={<PointerIcon />} aria-label="Compartilhar cursor" aria-pressed={interactionTool === "cursor"}
               onClick={() => { setPendingReaction(null); setInteractionTool(interactionTool === "cursor" ? null : "cursor"); }} />
           </Tooltip>
-          <Popover trigger="click" placement="top" content={
-            <div className="marker-menu">
-              {MARKER_STYLES.map((marker) => (
-                <Button key={marker} size="small" type={markerStyle === marker && interactionTool === "point" ? "primary" : "default"}
-                  onClick={() => { setPendingReaction(null); setMarkerStyle(marker); setInteractionTool("point"); }}>
-                  {marker === "ring" ? <AimOutlined /> : marker === "arrow" ? <ArrowRightOutlined /> : marker}
-                  <span>{markerLabels[marker]}</span>
-                </Button>
-              ))}
-            </div>
-          }>
-            <Tooltip title="Marcador temporário">
+            <Tooltip title="Marcar um local: clique do meio ou segure o clique/toque. Sem mover a tela de ninguém.">
               <Button disabled={!localCanPublishData || !targetInteraction} type={interactionTool === "point" ? "primary" : "default"}
-                icon={<AimOutlined />} aria-label="Marcador" />
+                icon={<AimOutlined />} aria-label="Marcar local (ping)" aria-pressed={interactionTool === "point"}
+                onClick={() => { setPendingReaction(null); setMarkerStyle("ring"); setInteractionTool(interactionTool === "point" ? null : "point"); }} />
             </Tooltip>
-          </Popover>
-          <Popover trigger="click" placement="top" content={drawingInspector}>
+          <Popover {...popoverProps("drawing")} trigger="click" placement="top" content={drawingInspector}>
             <Tooltip title="Ferramentas de desenho">
               <Button disabled={!localCanPublishData || !targetInteraction}
                 type={interactionTool === "draw" ? "primary" : "default"}
@@ -618,7 +610,7 @@ export default function RoomView(props) {
                 aria-label="Ferramentas de desenho" />
             </Tooltip>
           </Popover>
-          <Popover trigger="click" placement="top" content={
+          <Popover {...popoverProps("reactions")} trigger="click" placement="top" content={
             <div className="reaction-menu">
               {REACTIONS.map(({ key, emoji, label }) => (
                 <Tooltip key={key} title={label}>
@@ -661,11 +653,13 @@ export default function RoomView(props) {
             onClick={() => setConnectionsOpen(true)} /></Tooltip>
           <Tooltip title="Ajustes"><Button icon={<SettingOutlined />} aria-label="Ajustes"
             onClick={() => setSettingsOpen(true)} /></Tooltip>
-          <Popover trigger="click" placement="topRight" content={moreControls}>
+          <Popover {...popoverProps("more")} trigger="click" placement="topRight" content={moreControls}>
             <Tooltip title="Mais opções"><Button icon={<EllipsisOutlined />} aria-label="Mais opções" /></Tooltip>
           </Popover>
         </span>
       </div>
+
+      </ConfigProvider>
 
       <Drawer title="Pessoas" placement="right" open={connectionsOpen} onClose={() => setConnectionsOpen(false)} width={350}>
         {people.length === 0 && <Empty description="Ninguém por aqui" />}
@@ -904,6 +898,10 @@ export default function RoomView(props) {
           <div className="drawer-row"><span>Receber apontamentos e reações</span>
             <Switch checked={settings.interactionsEnabled}
               onChange={(value) => setSettings((current) => ({ ...current, interactionsEnabled: value }))} /></div>
+          <div className="drawer-row"><span>Mostrar pings e cursores</span>
+            <Switch aria-label="Mostrar pings e cursores" disabled={!settings.interactionsEnabled} checked={settings.pointersEnabled !== false}
+              onChange={(value) => setSettings((current) => ({ ...current, pointersEnabled: value }))} /></div>
+          <span className="host-room-help">Preferência só sua. Oculta os apontadores sem esconder desenhos e reações.</span>
         </div>
         <div className="drawer-group">
           <span className="drawer-title">Atalhos</span>

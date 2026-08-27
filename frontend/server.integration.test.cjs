@@ -78,7 +78,7 @@ function waitForOutput(child, output, timeoutMs = 5000) {
   });
 }
 
-test("token admission, uploads and HTTP assets work without a previous build", async (t) => {
+async function admissionScenario(t, apiMode) {
   const site = fs.mkdtempSync(path.join(os.tmpdir(), "mazestream-http-test-"));
   t.after(() => {
     assert.equal(path.dirname(path.resolve(site)), path.resolve(os.tmpdir()));
@@ -143,8 +143,10 @@ test("token admission, uploads and HTTP assets work without a previous build", a
       MAZESTREAM_DIST_DIR: site,
       LIVEKIT_API_KEY: "test-key",
       LIVEKIT_API_SECRET: "test-secret",
-      LIVEKIT_API_URL: "http://127.0.0.1:" + livekitPort,
-      PUBLIC_WSS_URL: "ws://127.0.0.1:7880",
+      LIVEKIT_API_URL: apiMode === "explicit" ? "http://127.0.0.1:" + livekitPort
+        : apiMode === "empty" ? "" : undefined,
+      // A different public endpoint proves that an explicit API URL takes priority.
+      PUBLIC_WSS_URL: "ws://127.0.0.1:" + (apiMode === "explicit" ? 7880 : livekitPort) + "/",
       MAX_ROOMS: "5",
       MAX_PARTICIPANTS_PER_ROOM: "12",
       TOKENS_POR_SEG: "40",
@@ -161,6 +163,7 @@ test("token admission, uploads and HTTP assets work without a previous build", a
 
   try {
     await waitForOutput(child, output);
+    assert.ok(output.text.includes("API: http://127.0.0.1:" + livekitPort));
     const tokenResponse = await request(appPort, "/token?room=teste%20room&name=Ana", { headers: { "X-Maze-Pin": "" } });
     assert.equal(tokenResponse.status, 200);
     const token = JSON.parse(tokenResponse.body);
@@ -278,4 +281,9 @@ test("token admission, uploads and HTTP assets work without a previous build", a
     await stopped;
     await close(livekit);
   }
-});
+}
+
+for (const apiMode of ["explicit", "empty", "unset"]) {
+  test(`token admission, uploads and HTTP assets work without a previous build (${apiMode} API URL)`,
+    (t) => admissionScenario(t, apiMode));
+}

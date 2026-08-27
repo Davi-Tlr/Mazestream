@@ -1,27 +1,16 @@
 import { lazy, Suspense, useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { getVideoContentArea, REACTION_EMOJIS, toNormalizedVideoPoint } from "../interactions.js";
+import { useAreaPing } from "../useAreaPing.js";
+import AreaPing from "./AreaPing.jsx";
+import SharedCursors from "./SharedCursors.jsx";
+import { useSharedCursor } from "../useSharedCursor.js";
 
 const DrawingCanvas = lazy(() => import("./DrawingCanvas.jsx"));
 
-function Marker({ item }) {
-  const marker = item.marker || "ring";
-  return (
-    <motion.div key={item.id} className={"interaction-ping marker-" + marker}
-      style={{ left: item.x * 100 + "%", top: item.y * 100 + "%" }}
-      initial={{ scale: 0.3, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
-      exit={{ scale: 1.5, opacity: 0 }} transition={{ type: "spring", stiffness: 520, damping: 24 }}>
-      {marker === "ring" && <span className="interaction-ping-ring" />}
-      {marker === "arrow" && <span className="marker-arrow">➜</span>}
-      {["1", "2", "3"].includes(marker) && <span className="marker-number">{marker}</span>}
-      <span className="interaction-author">{item.author}</span>
-    </motion.div>
-  );
-}
-
 export default function InteractionOverlay({
-  videoRef, tool, items, brush, markerStyle = "ring", pendingReaction,
-  onPing, onStroke, onCursor, onReactionAt
+  videoRef, tileKey, tool, items, brush, markerStyle = "ring", pendingReaction,
+  onPing, onStroke, onCursor, onReactionAt, canInteract = false
 }) {
   const color = (brush && brush.color) || "#ffffff";
   const width = (brush && brush.width) || 5;
@@ -30,7 +19,6 @@ export default function InteractionOverlay({
   const [area, setArea] = useState(null);
   const strokeRef = useRef(null);
   const [liveStroke, setLiveStroke] = useState(null);
-  const lastCursorRef = useRef(0);
 
   useEffect(() => {
     const video = videoRef && videoRef.current;
@@ -56,31 +44,34 @@ export default function InteractionOverlay({
   }, [videoRef]);
 
   const drawing = tool === "draw";
+  const ping = useAreaPing({ getPoint, onPing, enabled: canInteract, tool });
+  const cursor = useSharedCursor({ getPoint, onCursor, enabled: canInteract && tool === "cursor", surfaceKey: tileKey });
 
   function handleDown(event) {
+    cursor.move(event);
+    if (ping.down(event, canInteract, tool)) return;
+    if (!canInteract || event.button !== 0 || event.isPrimary === false) return;
     if (!tool) return;
     event.stopPropagation();
     const point = getPoint(event);
     if (!point) return;
-    if (tool === "point") { onPing(point, markerStyle); return; }
     if (tool === "reaction") { if (pendingReaction) onReactionAt(point, pendingReaction); return; }
     if (!drawing) return;
+    event.currentTarget.setPointerCapture?.(event.pointerId);
     const points = [[point.x, point.y]];
     strokeRef.current = points;
     setLiveStroke({ points, color, width, tool: drawTool, opacity });
   }
 
   function handleMove(event) {
+    ping.move(event);
+    cursor.move(event);
+    if (!canInteract || event.isPrimary === false) return;
     if (!tool) return;
     const point = getPoint(event);
     if (!point) return;
     if (tool === "cursor") {
       event.stopPropagation();
-      const now = performance.now();
-      if (now - lastCursorRef.current >= 55) {
-        lastCursorRef.current = now;
-        onCursor(point);
-      }
       return;
     }
     if (!drawing || !strokeRef.current) return;
@@ -98,6 +89,8 @@ export default function InteractionOverlay({
   }
 
   function handleUp(event) {
+    if (event.pointerType === "touch") cursor.hide();
+    if (ping.up(event)) return;
     if (!drawing || !strokeRef.current) return;
     event.stopPropagation();
     const points = strokeRef.current;
@@ -106,33 +99,35 @@ export default function InteractionOverlay({
     if (points.length > 1) onStroke(points, color, width, drawTool, opacity);
   }
 
+  function cancelGesture() {
+    ping.cancel();
+    cursor.hide();
+    strokeRef.current = null;
+    setLiveStroke(null);
+  }
+
   if (!area) return null;
 
   const areaStyle = { position: "absolute", left: area.left, top: area.top, width: area.width, height: area.height };
   const strokes = (items || []).filter((item) => item.type === "stroke");
   const pings = (items || []).filter((item) => item.type === "ping");
-  const cursors = (items || []).filter((item) => item.type === "cursor");
   const reactions = (items || []).filter((item) => item.type === "reaction");
 
   return (
-    <div className={"interaction-overlay" + (tool ? " active" : "")} style={areaStyle}
-      onMouseDown={handleDown} onMouseMove={handleMove} onMouseUp={handleUp} onMouseLeave={handleUp}
-      onTouchStart={handleDown} onTouchMove={handleMove} onTouchEnd={handleUp} onTouchCancel={handleUp}>
+    <div className={"interaction-overlay" + (canInteract ? " interactive" : "") + (tool ? " active" : "")}
+      data-drawing={drawing ? "true" : "false"} data-tool={tool || "none"} style={areaStyle}
+      onPointerDown={handleDown} onPointerMove={handleMove} onPointerUp={handleUp}
+      onPointerEnter={cursor.move} onPointerLeave={() => { cursor.hide(); ping.cancel(); }}
+      onPointerCancel={cancelGesture} onLostPointerCapture={cancelGesture}
+      onClick={ping.click} onContextMenu={ping.contextMenu}
+      onAuxClick={(event) => { if (canInteract && event.button === 1) { event.preventDefault(); event.stopPropagation(); } }}>
       <Suspense fallback={null}>
         <DrawingCanvas actions={strokes} liveAction={liveStroke} />
       </Suspense>
 
-      <AnimatePresence>{pings.map((ping) => <Marker key={ping.id} item={ping} />)}</AnimatePresence>
+      <AnimatePresence>{pings.map((ping) => <AreaPing key={ping.id} item={ping} />)}</AnimatePresence>
 
-      <AnimatePresence>
-        {cursors.map((cursor) => (
-          <motion.div key={cursor.id} className="shared-cursor"
-            style={{ left: cursor.x * 100 + "%", top: cursor.y * 100 + "%" }}
-            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-            <span className="shared-cursor-arrow">➤</span><span className="interaction-author">{cursor.author}</span>
-          </motion.div>
-        ))}
-      </AnimatePresence>
+      <SharedCursors tile={tileKey} />
 
       <AnimatePresence>
         {reactions.map((reaction) => {

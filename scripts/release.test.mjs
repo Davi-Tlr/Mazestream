@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
+import { parseDocument } from "yaml";
 import { root } from "./build-info.mjs";
 import { copyAllowed, safePath, validatePackage, writeChecksums } from "./release-lib.mjs";
 import { resolveAppProfile } from "../frontend/src/appProfile.js";
@@ -30,6 +31,22 @@ test("os perfis compartilham resolucao e diferem apenas nas politicas declaradas
   assert.equal(resolveAppProfile("local").screenBitrates.high, 5_000_000);
   assert.equal(resolveAppProfile("host-a1").screenBitrates.high, 4_000_000);
   assert.equal(resolveAppProfile("inexistente", true).id, "host-a1");
+});
+
+test("selfhost defaults inherit the public API endpoint without overriding an explicit internal URL", () => {
+  const compose = parseDocument(readFileSync(path.join(root, "docker-compose.yaml"), "utf8")).toJS();
+  for (const service of ["frontend", "discord-relay"]) {
+    const environment = compose.services[service].environment;
+    assert.equal(environment.find((line) => line.startsWith("LIVEKIT_API_URL=")), "LIVEKIT_API_URL=${LIVEKIT_API_URL:-}");
+    assert.ok(environment.includes("PUBLIC_WSS_URL=${PUBLIC_WSS_URL:-}"));
+    assert.ok(compose.services[service].extra_hosts.includes("host.docker.internal:host-gateway"));
+  }
+  const deploy = readFileSync(path.join(root, "deploy.sh"), "utf8");
+  const generatedEnv = deploy.match(/^cat > \.env <<EOF\r?\n([\s\S]*?)^EOF\r?$/m)?.[1];
+  assert.ok(generatedEnv, "Installer env template is missing.");
+  assert.match(generatedEnv, /^PUBLIC_WSS_URL=wss:\/\/\$DOMAIN\r?$/m);
+  assert.match(generatedEnv, /^LIVEKIT_API_URL=\r?$/m);
+  assert.match(readFileSync(path.join(root, "host-a1.env.example"), "utf8"), /^LIVEKIT_API_URL=\r?$/m);
 });
 test("caminhos de empacotamento nao escapam da raiz", () => {
   for (const file of ["../outside", "", path.resolve(root, "package.json")]) assert.throws(() => safePath(root, file));

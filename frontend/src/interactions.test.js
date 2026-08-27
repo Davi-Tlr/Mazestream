@@ -56,6 +56,9 @@ test("final strokes are reliable and bounded; pointers remain lossy", () => {
   const pointer = prepareInteractionPublication({ type: "cursor", x: 0.1, y: 0.2 });
   assert.equal(pointer.options.reliable, false);
   assert.ok(pointer.payload.byteLength <= 1300);
+  const ping = prepareInteractionPublication({ type: "ping", marker: "ring", x: 0.5, y: 0.5 });
+  assert.equal(ping.options.reliable, true);
+  assert.ok(ping.payload.byteLength < 200);
   const snapshot = prepareInteractionPublication({ type: "board-sync", strokes: [] }, true, ["peer"]);
   assert.deepEqual(snapshot.options.destinationIdentities, ["peer"]);
 });

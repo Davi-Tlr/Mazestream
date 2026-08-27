@@ -71,42 +71,44 @@ export default function JoinScreen({ joining, onJoin }) {
         <h1>Entre e compartilhe.</h1>
         <p className="subtitle">Tela, câmera e áudio em uma sala, direto no navegador. A voz pode continuar no seu Discord.</p>
 
-        <div className="field">
-          <label htmlFor="name">Seu nome</label>
-          <Input id="name" size="large" placeholder="Seu nome" maxLength={40}
-            value={name} disabled={joining} onChange={(event) => setName(event.target.value)} onPressEnter={submit} />
-        </div>
-
-        <div className="field">
-          <label htmlFor="room">Nome da sala</label>
-          <Input id="room" size="large" placeholder="geral" maxLength={40}
-            value={room} disabled={joining} onChange={(event) => setRoom(event.target.value)} onPressEnter={submit} />
-        </div>
-
-        <div className="field">
-          <label>Como você quer entrar?</label>
-          <Segmented block disabled={joining} value={role} onChange={setRole} options={[
-            { value: "participant", label: <span><UserOutlined /> Participar</span> },
-            { value: "spectator", label: <span><EyeOutlined /> Só assistir</span> }
-          ]} />
-        </div>
-
-        <div className="join-inline-fields">
+        <form className="join-form" onSubmit={(event) => { event.preventDefault(); submit(); }}>
           <div className="field">
-            <label htmlFor="pin">PIN da sala <span className="field-optional">opcional</span></label>
-            <Input.Password id="pin" size="large" placeholder="Se a sala tiver PIN" maxLength={24}
-              value={pin} disabled={joining} onChange={(event) => setPin(event.target.value)} onPressEnter={submit} />
+            <label htmlFor="name">Seu nome</label>
+            <Input id="name" size="large" placeholder="Seu nome" maxLength={40}
+              value={name} disabled={joining} onChange={(event) => setName(event.target.value)} autoComplete="nickname" />
           </div>
-          <div className="field">
-            <label>Modo se a sala for nova</label>
-            <Select size="large" disabled={joining} value={preset} options={PRESET_OPTIONS} style={{ width: "100%" }} onChange={setPreset} />
-          </div>
-        </div>
-        <p className="preset-hint">{ROOM_PRESETS[preset]?.description}</p>
 
-        <Button type="primary" size="large" block loading={joining} onClick={submit}>
-          {role === "spectator" ? "Entrar só para assistir" : "Entrar"}
-        </Button>
+          <div className="field">
+            <label htmlFor="room">Nome da sala</label>
+            <Input id="room" size="large" placeholder="geral" maxLength={40}
+              value={room} disabled={joining} onChange={(event) => setRoom(event.target.value)} />
+          </div>
+
+          <div className="field">
+            <label id="join-role-label">Como você quer entrar?</label>
+            <Segmented aria-labelledby="join-role-label" block disabled={joining} value={role} onChange={setRole} options={[
+              { value: "participant", label: <span><UserOutlined /> Participar</span> },
+              { value: "spectator", label: <span><EyeOutlined /> Só assistir</span> }
+            ]} />
+          </div>
+
+          <div className="join-inline-fields">
+            <div className="field">
+              <label htmlFor="pin">PIN da sala <span className="field-optional">opcional</span></label>
+              <Input.Password id="pin" size="large" placeholder="Opcional" maxLength={24}
+                value={pin} disabled={joining} onChange={(event) => setPin(event.target.value)} />
+            </div>
+            <div className="field">
+              <label htmlFor="preset">Modo da sala nova</label>
+              <Select id="preset" size="large" disabled={joining} value={preset} options={PRESET_OPTIONS} style={{ width: "100%" }} onChange={setPreset} />
+            </div>
+          </div>
+          <p className="preset-hint">{ROOM_PRESETS[preset]?.description}</p>
+
+          <Button type="primary" htmlType="submit" size="large" block loading={joining}>
+            {role === "spectator" ? "Entrar só para assistir" : "Entrar"}
+          </Button>
+        </form>
 
         <p className="join-notice">
           Se você for a primeira pessoa de uma sala nova, vira o host dela automaticamente.{" "}
