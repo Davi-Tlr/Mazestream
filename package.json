@@ -4,7 +4,7 @@
   "private": true,
   "description": "Compartilhamento de tela e colaboração em tempo real com LiveKit.",
   "workspaces": ["frontend", "discord-relay"],
-  "engines": { "node": "^22.14.0 || ^24.0.0", "npm": ">=10 <12" },
+  "engines": { "node": "^22.22.0 || ^24.0.0", "npm": ">=10 <12" },
   "devDependencies": { "yaml": "2.9.0" },
   "scripts": {
     "dev": "npm run dev:full --workspace=@mazestream/web",

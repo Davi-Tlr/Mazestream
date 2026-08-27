@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Track } from "livekit-client";
-import { getBufferedSeconds, pruneRollingPackets, selectClipEntries } from "./clipBufferCore.js";
+import { muxClip } from "./clipMux.js";
+import { appendClipPacket, bufferedPacketBytes, getBufferedSeconds, pruneRollingPackets, selectClipEntries } from "./clipBufferCore.js";
 import { chooseScreenAudioPublication } from "./clipTrackSelection.js";
 
 let mediaModulePromise = null;
 function loadMediaModule() {
-  if (!mediaModulePromise) mediaModulePromise = import("./clipMedia.js");
+  if (!mediaModulePromise) mediaModulePromise = import("./clipMedia.js").catch((error) => {
+    mediaModulePromise = null;
+    throw error;
+  });
   return mediaModulePromise;
 }
 
@@ -33,47 +37,6 @@ function downloadBlob(blob) {
   window.setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
-async function muxClip(runtime, selection) {
-  const {
-    BufferTarget, EncodedAudioPacketSource, EncodedVideoPacketSource,
-    Output, WebMOutputFormat
-  } = runtime.media;
-  const target = new BufferTarget();
-  const output = new Output({ format: new WebMOutputFormat(), target });
-  const videoSource = new EncodedVideoPacketSource(runtime.videoCodec);
-  const hasAudio = !!runtime.audioCodec && selection.audio.length > 0;
-  const audioSource = hasAudio ? new EncodedAudioPacketSource(runtime.audioCodec) : null;
-  output.addVideoTrack(videoSource);
-  if (audioSource) output.addAudioTrack(audioSource);
-  await output.start();
-
-  const entries = selection.video.map((entry) => ({ ...entry, kind: "video" }))
-    .concat(selection.audio.map((entry) => ({ ...entry, kind: "audio" })))
-    .sort((left, right) => left.order - right.order);
-  let firstVideo = true;
-  let firstAudio = true;
-
-  for (const entry of entries) {
-    const packet = entry.packet.clone({
-      timestamp: Math.max(0, entry.packet.timestamp - selection.startTimestamp)
-    });
-    if (entry.kind === "video") {
-      await videoSource.add(packet, firstVideo ? (entry.meta || runtime.videoMeta) : undefined);
-      firstVideo = false;
-    } else if (audioSource) {
-      await audioSource.add(packet, firstAudio ? (entry.meta || runtime.audioMeta) : undefined);
-      firstAudio = false;
-    }
-  }
-
-  videoSource.close();
-  if (audioSource) audioSource.close();
-  const mimeType = await output.getMimeType();
-  await output.finalize();
-  if (!target.buffer) throw new Error("O navegador não finalizou o arquivo do clipe.");
-  return new Blob([target.buffer], { type: mimeType || "video/webm" });
-}
-
 export function useClipBuffer(room, tile, maxSeconds = 45, enabled = false) {
   const runtimeRef = useRef(null);
   const exportingRef = useRef(false);
@@ -92,11 +55,16 @@ export function useClipBuffer(room, tile, maxSeconds = 45, enabled = false) {
 
     const stopRuntime = (runtime) => {
       if (!runtime) return;
+      runtime.failed = true;
+      runtime.exportController?.abort();
       try { runtime.videoSource?.close(); } catch (e) {}
       try { runtime.audioSource?.close(); } catch (e) {}
       if (runtime.output && !["canceled", "finalized"].includes(runtime.output.state)) {
         void runtime.output.cancel().catch(() => {});
       }
+      runtime.video = [];
+      runtime.audio = [];
+      runtime.bufferedBytes = 0;
     };
 
     const previous = runtimeRef.current;
@@ -144,6 +112,7 @@ export function useClipBuffer(room, tile, maxSeconds = 45, enabled = false) {
           audio: [],
           latest: 0,
           order: 0,
+          bufferedBytes: 0,
           readyWholeSeconds: 0,
           lastPrunedTimestamp: -Infinity,
           failed: false
@@ -169,6 +138,7 @@ export function useClipBuffer(room, tile, maxSeconds = 45, enabled = false) {
           const pruned = pruneRollingPackets(runtime.video, runtime.audio, runtime.latest, maxSeconds);
           runtime.video = pruned.video;
           runtime.audio = pruned.audio;
+          runtime.bufferedBytes = bufferedPacketBytes(runtime.video, runtime.audio);
           const wholeSeconds = Math.floor(getBufferedSeconds(runtime.video, runtime.latest, maxSeconds));
           if (wholeSeconds !== runtime.readyWholeSeconds) {
             runtime.readyWholeSeconds = wholeSeconds;
@@ -189,9 +159,10 @@ export function useClipBuffer(room, tile, maxSeconds = 45, enabled = false) {
             runtime.videoMeta = { decoderConfig: config };
           },
           onEncodedPacket: (packet, meta) => {
-            if (disposed) return;
+            if (disposed || runtime.failed) return;
             if (meta && !runtime.videoMeta) runtime.videoMeta = meta;
-            runtime.video.push({ packet: packet.clone(), meta, order: runtime.order++ });
+            try { appendClipPacket(runtime, "video", packet, meta); }
+            catch (error) { onPacketError(error); return; }
             runtime.latest = Math.max(runtime.latest, packet.timestamp + packet.duration);
             updateRing();
           }
@@ -208,9 +179,10 @@ export function useClipBuffer(room, tile, maxSeconds = 45, enabled = false) {
               runtime.audioMeta = { decoderConfig: config };
             },
             onEncodedPacket: (packet, meta) => {
-              if (disposed) return;
+              if (disposed || runtime.failed) return;
               if (meta && !runtime.audioMeta) runtime.audioMeta = meta;
-              runtime.audio.push({ packet: packet.clone(), meta, order: runtime.order++ });
+              try { appendClipPacket(runtime, "audio", packet, meta); }
+              catch (error) { onPacketError(error); }
             }
           });
           output.addAudioTrack(audioSource);
@@ -222,7 +194,7 @@ export function useClipBuffer(room, tile, maxSeconds = 45, enabled = false) {
         runtime.audioSource = audioSource;
         runtimeRef.current = runtime;
         await output.start();
-        if (disposed) { stopRuntime(runtime); return; }
+        if (disposed || runtime.failed) { stopRuntime(runtime); return; }
         setSupported(true);
         setBuffering(true);
       } catch (caught) {
@@ -253,15 +225,22 @@ export function useClipBuffer(room, tile, maxSeconds = 45, enabled = false) {
     exportingRef.current = true;
     setExporting(true);
     setError("");
+    const controller = new AbortController();
+    runtime.exportController = controller;
+    const timer = window.setTimeout(() => controller.abort(new Error("A exportação do clipe demorou demais. Tente um intervalo menor.")), 30000);
     try {
-      const blob = await muxClip(runtime, selection);
+      const blob = await muxClip(runtime, selection, controller.signal);
+      if (runtimeRef.current !== runtime || controller.signal.aborted) return false;
       downloadBlob(blob);
       return true;
     } catch (caught) {
+      if (runtimeRef.current !== runtime) return false;
       const reason = caught instanceof Error ? caught.message : "Falha ao montar o clipe.";
       setError(reason);
       throw caught;
     } finally {
+      window.clearTimeout(timer);
+      runtime.exportController = null;
       exportingRef.current = false;
       setExporting(false);
     }

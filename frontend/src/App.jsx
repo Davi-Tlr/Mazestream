@@ -1,6 +1,6 @@
 import { lazy, Suspense, useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { App as AntApp } from "antd";
-import { Track, VideoQuality, RoomEvent } from "livekit-client";
+import { Track, RoomEvent } from "livekit-client";
 import { useRoom } from "./useRoom.js";
 import {
   useCollectTiles, useCollectAudios, useCollectPeople,
@@ -8,6 +8,8 @@ import {
 } from "./collect.js";
 import { readState, buildState } from "./state.js";
 import { useScreenShare } from "./useScreenShare.js";
+import { useBoard } from "./useBoard.js";
+import { applyReceiveQuality } from "./receiveQuality.js";
 import { DEFAULT_SETTINGS } from "./constants.js";
 import { useClipBuffer } from "./useClipBuffer.js";
 import {
@@ -15,7 +17,7 @@ import {
   sanitizeChatText, sanitizeFileMeta, normalizePresenter, presenterMatchesTile, normalizeRoomName
 } from "./roomFeatures.js";
 import {
-  INTERACTION_TOPIC, encodeInteractionForTransport, decodeInteraction, newInteractionId,
+  INTERACTION_TOPIC, prepareInteractionPublication, decodeInteraction, newInteractionId,
   INTERACTION_LIFETIME, DRAW_COLORS, DRAW_WIDTHS,
   sanitizeDrawAction,
   REACTION_EMOJIS, REACTION_TO_WIRE, REACTION_FROM_WIRE, LEGACY_TYPE_MAP, MARKER_STYLES
@@ -25,12 +27,6 @@ import JoinScreen from "./ui/JoinScreen.jsx";
 // The login screen does not need the full room toolbar, Konva board or motion
 // components. Keep that surface in a deferred chunk so first paint stays light.
 const RoomView = lazy(() => import("./ui/RoomView.jsx"));
-
-const RECEIVE_QUALITY_MAP = {
-  high: VideoQuality.HIGH,
-  medium: VideoQuality.MEDIUM,
-  low: VideoQuality.LOW
-};
 
 const OLD_QUALITY_MAP = { alta: "high", media: "medium", baixa: "low", auto: "auto" };
 
@@ -244,17 +240,7 @@ export default function App() {
   const { sharing, shareScreen, stopBroadcast, stopAll, pauseLive, resumeLive } = useScreenShare(room, settings, updateMeta, message);
 
   useEffect(() => {
-    if (!room) return;
-    if (settings.receiveQuality === "auto") return;
-    const target = RECEIVE_QUALITY_MAP[settings.receiveQuality];
-    if (target === undefined) return;
-    room.remoteParticipants.forEach((participant) => {
-      participant.videoTrackPublications.forEach((pub) => {
-        if (pub.setVideoQuality) {
-          try { pub.setVideoQuality(target); } catch (e) {}
-        }
-      });
-    });
+    applyReceiveQuality(room, settings.receiveQuality);
   }, [room, settings.receiveQuality, trackVer]);
 
   // ---- Ephemeral interaction layer ---------------------------------------
@@ -264,21 +250,10 @@ export default function App() {
   const [pendingReaction, setPendingReaction] = useState(null);
   const [brush, setBrush] = useState({ color: DRAW_COLORS[0], width: DRAW_WIDTHS[1], tool: "pen" });
   const [boardOpen, setBoardOpen] = useState(false);
-  const [boardStrokes, setBoardStrokes] = useState([]);
   const [attentionRequest, setAttentionRequest] = useState(null);
-  const boardRef = useRef(boardStrokes);
-  const boardHistoryRef = useRef({ undo: [], redo: [] });
-  const [boardHistoryState, setBoardHistoryState] = useState({ canUndo: false, canRedo: false });
   const interactionTimersRef = useRef(new Map());
   const cursorTimersRef = useRef(new Map());
   const inboundDataBudgetRef = useRef(new Map());
-
-  useEffect(() => { boardRef.current = boardStrokes; }, [boardStrokes]);
-
-  const updateBoardHistoryState = useCallback(() => {
-    const history = boardHistoryRef.current;
-    setBoardHistoryState({ canUndo: history.undo.length > 0, canRedo: history.redo.length > 0 });
-  }, []);
 
   const addInteraction = useCallback((item) => {
     setInteractions((list) => list.filter((current) => current.id !== item.id).concat(item).slice(-80));
@@ -309,14 +284,27 @@ export default function App() {
     inboundDataBudgetRef.current.clear();
   }, []);
 
-  const sendData = useCallback((data, reliable = false) => {
-    if (!room || !localCanPublishData) return;
+  const lastInteractionErrorRef = useRef(0);
+  const sendData = useCallback((data, reliable = false, destinations) => {
+    if (!room || !localCanPublishData) return Promise.resolve(false);
+    const reportFailure = () => {
+      if (Date.now() - lastInteractionErrorRef.current < 5000) return;
+      lastInteractionErrorRef.current = Date.now();
+      message.warning("Não consegui enviar uma interação. Confira a conexão e tente novamente.");
+    };
     try {
-      void room.localParticipant.publishData(encodeInteractionForTransport(data), { reliable, topic: INTERACTION_TOPIC }).catch(() => {});
-    } catch (e) {}
-  }, [room, localCanPublishData]);
+      const publication = prepareInteractionPublication(data, reliable, destinations);
+      return room.localParticipant.publishData(publication.payload, publication.options).then(() => true).catch(() => {
+        reportFailure();
+        return false;
+      });
+    } catch (e) { reportFailure(); return Promise.resolve(false); }
+  }, [room, localCanPublishData, message]);
 
   const myName = room ? (room.localParticipant.name || room.localParticipant.identity) : "";
+  const { boardStrokes, boardHistoryState, addBoardStroke, undoBoard, redoBoard, clearBoard } = useBoard(
+    room, localCanPublishData, sendData, message
+  );
 
   const sendPing = useCallback((tile, point, marker = "ring") => {
     if (!tile || !point) return;
@@ -361,70 +349,6 @@ export default function App() {
     setPendingReaction(null);
   }, [addInteraction, sendData]);
 
-  const addBoardStroke = useCallback((points, color, width, tool = "pen", opacity) => {
-    const drawing = sanitizeDrawAction({ points, color, width, tool, opacity });
-    if (drawing.points.length < 2) return;
-    const stroke = {
-      ...drawing, id: newInteractionId()
-    };
-    setBoardStrokes((list) => list.concat(stroke).slice(-400));
-    boardHistoryRef.current.undo.push(stroke);
-    boardHistoryRef.current.undo = boardHistoryRef.current.undo.slice(-400);
-    boardHistoryRef.current.redo = [];
-    updateBoardHistoryState();
-    sendData({
-      type: "board-stroke", t: "q-risco", ...stroke,
-      pts: stroke.points, cor: stroke.color, espessura: stroke.width
-    }, true);
-  }, [sendData, updateBoardHistoryState]);
-
-  const undoBoard = useCallback(() => {
-    const history = boardHistoryRef.current;
-    const stroke = history.undo.pop();
-    if (!stroke) return;
-    history.redo.push(stroke);
-    setBoardStrokes((list) => list.filter((item) => item.id !== stroke.id));
-    sendData({ type: "board-erase", t: "q-apagar", ids: [stroke.id] }, true);
-    updateBoardHistoryState();
-  }, [sendData, updateBoardHistoryState]);
-
-  const redoBoard = useCallback(() => {
-    const history = boardHistoryRef.current;
-    const stroke = history.redo.pop();
-    if (!stroke) return;
-    history.undo.push(stroke);
-    history.undo = history.undo.slice(-400);
-    setBoardStrokes((list) => list.some((item) => item.id === stroke.id) ? list : list.concat(stroke).slice(-400));
-    sendData({
-      type: "board-stroke", t: "q-risco", ...stroke,
-      pts: stroke.points, cor: stroke.color, espessura: stroke.width
-    }, true);
-    updateBoardHistoryState();
-  }, [sendData, updateBoardHistoryState]);
-
-  const clearBoard = useCallback(() => {
-    setBoardStrokes([]);
-    boardHistoryRef.current = { undo: [], redo: [] };
-    updateBoardHistoryState();
-    sendData({ type: "board-clear", t: "q-limpar" }, true);
-  }, [sendData, updateBoardHistoryState]);
-
-  const sendBoardSnapshot = useCallback(() => {
-    const snapshot = (boardRef.current || []).slice(-400);
-    let batch = [];
-    for (const stroke of snapshot) {
-      const candidate = batch.concat(stroke);
-      // Keep reliable data packets comfortably below LiveKit's packet ceiling.
-      if (batch.length && (candidate.length > 12 || JSON.stringify({ type: "board-sync", strokes: candidate }).length > 10000)) {
-        sendData({ type: "board-sync", strokes: batch }, true);
-        batch = [stroke];
-      } else {
-        batch = candidate;
-      }
-    }
-    if (batch.length) sendData({ type: "board-sync", strokes: batch }, true);
-  }, [sendData]);
-
   const callAttention = useCallback((tile, title) => {
     if (!tile) return;
     sendData({ type: "look", t: "olha", tile, title: title || "", titulo: title || "" }, true);
@@ -441,7 +365,7 @@ export default function App() {
       const data = decodeInteraction(payload);
       if (!data) return;
       const type = data.type || LEGACY_TYPE_MAP[data.t];
-      if (!type) return;
+      if (typeof type !== "string" || type.startsWith("board-")) return;
 
       // Data packets are intentionally lightweight, but a participant can
       // still flood a browser with valid packets. Keep cursors responsive while
@@ -455,40 +379,6 @@ export default function App() {
       currentBudget.count += 1;
       inboundDataBudgetRef.current.set(sender, currentBudget);
 
-      if (type === "board-request") {
-        sendBoardSnapshot();
-        return;
-      }
-      if (type === "board-sync" && Array.isArray(data.strokes)) {
-        const incoming = data.strokes.slice(0, 12).map(sanitizeDrawAction)
-          .filter((stroke) => stroke.points.length > 1);
-        setBoardStrokes((list) => {
-          const known = new Set(list.map((stroke) => stroke.id));
-          return list.concat(incoming.filter((stroke) => !known.has(stroke.id))).slice(-400);
-        });
-        return;
-      }
-      if (type === "board-stroke") {
-        const stroke = sanitizeDrawAction(data);
-        if (stroke.points.length < 2) return;
-        setBoardStrokes((list) => list.some((current) => current.id === stroke.id)
-          ? list : list.concat(stroke).slice(-400));
-        return;
-      }
-      if (type === "board-erase" && Array.isArray(data.ids)) {
-        const ids = data.ids.slice(0, 40).map(String);
-        setBoardStrokes((list) => list.filter((stroke) => !ids.includes(stroke.id)));
-        boardHistoryRef.current.undo = boardHistoryRef.current.undo.filter((stroke) => !ids.includes(stroke.id));
-        boardHistoryRef.current.redo = boardHistoryRef.current.redo.filter((stroke) => !ids.includes(stroke.id));
-        updateBoardHistoryState();
-        return;
-      }
-      if (type === "board-clear") {
-        setBoardStrokes([]);
-        boardHistoryRef.current = { undo: [], redo: [] };
-        updateBoardHistoryState();
-        return;
-      }
       if (type === "look" && data.tile) {
         setAttentionRequest({
           id: newInteractionId(), tile: String(data.tile), author,
@@ -534,10 +424,8 @@ export default function App() {
     }
 
     room.on(RoomEvent.DataReceived, onData);
-    // Ask existing participants for the current board after our listener exists.
-    sendData({ type: "board-request", requester: myName }, true);
     return () => { room.off(RoomEvent.DataReceived, onData); };
-  }, [room, settings.interactionsEnabled, peopleSettings, addInteraction, upsertCursor, sendData, sendBoardSnapshot, myName, updateBoardHistoryState]);
+  }, [room, settings.interactionsEnabled, peopleSettings, addInteraction, upsertCursor]);
 
   // ---- Room features: chat, temporary files, host controls and presenter ---
   const addChatMessage = useCallback((item) => {

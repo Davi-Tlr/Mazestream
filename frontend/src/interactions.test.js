@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   INTERACTION_LIFETIME, REACTION_EMOJIS, STREAM_DRAWING_TTL_MS,
-  decodeInteraction, encodeInteraction, encodeInteractionForTransport, sanitizeColor, sanitizeDrawAction
+  decodeInteraction, encodeInteraction, encodeInteractionForTransport, prepareInteractionPublication, sanitizeColor, sanitizeDrawAction
 } from "./interactions.js";
 
 test("aceita cores hex personalizadas e rejeita valores inseguros", () => {
@@ -45,6 +45,24 @@ test("compacta o alias legado em traços longos antes de enviar", () => {
 test("o conjunto novo de reações tem oito emojis válidos", () => {
   assert.equal(Object.keys(REACTION_EMOJIS).length, 8);
   assert.equal(REACTION_EMOJIS.thumbsUp, "👍");
+});
+
+test("final strokes are reliable and bounded; pointers remain lossy", () => {
+  const points = Array.from({ length: 600 }, (_, i) => [(i * 7919 % 10000) / 10000, (i * 3571 % 10000) / 10000]);
+  const stroke = prepareInteractionPublication({ type: "stroke", points, pts: points });
+  assert.equal(stroke.options.reliable, true);
+  assert.ok(stroke.payload.byteLength <= 12 * 1024);
+  assert.equal(decodeInteraction(stroke.payload).points.length, 600);
+  const pointer = prepareInteractionPublication({ type: "cursor", x: 0.1, y: 0.2 });
+  assert.equal(pointer.options.reliable, false);
+  assert.ok(pointer.payload.byteLength <= 1300);
+  const snapshot = prepareInteractionPublication({ type: "board-sync", strokes: [] }, true, ["peer"]);
+  assert.deepEqual(snapshot.options.destinationIdentities, ["peer"]);
+});
+
+test("oversized payloads are refused instead of silently exceeding transport limits", () => {
+  assert.throws(() => prepareInteractionPublication({ type: "cursor", text: "x".repeat(1400) }), RangeError);
+  assert.throws(() => prepareInteractionPublication({ type: "board-sync", text: "x".repeat(13000) }, true), RangeError);
 });
 
 test("desenhos sobre a transmissão são explicitamente temporários", () => {

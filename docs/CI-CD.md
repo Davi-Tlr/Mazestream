@@ -27,6 +27,8 @@ Executa manualmente ou quando você publica uma tag `v*`. Refaz a validação, p
 
 Ele não cria um GitHub Release público, não publica no npm/GHCR e não implanta. Publicar o release visível aos usuários continua sendo uma decisão manual após o teste real de transmissão.
 
+O [checklist de release](RELEASE-CHECKLIST.md) separa os checks automáticos da validação em dispositivos reais. Pacotes locais com `dirty: true` são candidatos de trabalho; após aprovar e fazer o commit, gere novamente os artefatos para registrar o SHA exato da versão publicada.
+
 ## Começar a usar
 
 1. Revise as alterações locais e faça seus próprios commits. Nenhum comando desta preparação publica alterações no GitHub.

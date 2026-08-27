@@ -4,6 +4,9 @@ const http = require("node:http");
 const fs = require("node:fs");
 const { spawn } = require("node:child_process");
 const path = require("node:path");
+const os = require("node:os");
+const zlib = require("node:zlib");
+const { once } = require("node:events");
 
 function listen(server) {
   return new Promise((resolve, reject) => {
@@ -75,7 +78,19 @@ function waitForOutput(child, output, timeoutMs = 5000) {
   });
 }
 
-test("token admission creates rooms and room controls keep working", async () => {
+test("token admission, uploads and HTTP assets work without a previous build", async (t) => {
+  const site = fs.mkdtempSync(path.join(os.tmpdir(), "mazestream-http-test-"));
+  t.after(() => {
+    assert.equal(path.dirname(path.resolve(site)), path.resolve(os.tmpdir()));
+    assert.ok(path.basename(site).startsWith("mazestream-http-test-"));
+    fs.rmSync(site, { recursive: true, force: true });
+  });
+  fs.mkdirSync(path.join(site, "assets"));
+  const html = '<!doctype html><html><script src="/assets/app-fixture123.js"></script></html>';
+  fs.writeFileSync(path.join(site, "index.html"), html);
+  fs.writeFileSync(path.join(site, "index.html.br"), zlib.brotliCompressSync(html));
+  fs.writeFileSync(path.join(site, "assets", "app-fixture123.js"), 'console.log("fixture");');
+  fs.writeFileSync(path.join(site, "build-info.json"), JSON.stringify({ profile: "local" }));
   const rooms = [];
   let createCalls = 0;
   const livekit = http.createServer((req, res) => {
@@ -123,16 +138,23 @@ test("token admission creates rooms and room controls keep working", async () =>
     cwd: __dirname,
     env: {
       ...process.env,
+      HOST: "127.0.0.1",
       PORT: String(appPort),
+      MAZESTREAM_DIST_DIR: site,
       LIVEKIT_API_KEY: "test-key",
       LIVEKIT_API_SECRET: "test-secret",
       LIVEKIT_API_URL: "http://127.0.0.1:" + livekitPort,
       PUBLIC_WSS_URL: "ws://127.0.0.1:7880",
       MAX_ROOMS: "5",
       MAX_PARTICIPANTS_PER_ROOM: "12",
-      TOKENS_POR_SEG: "40"
+      TOKENS_POR_SEG: "40",
+      SHARE_MAX_MB: "1",
+      SHARE_TOTAL_MB: "1",
+      SHARE_MAX_FILES: "3",
+      SHARE_MAX_UPLOADS: "1",
+      SHARE_UPLOADS_PER_MINUTE: "3"
     },
-    stdio: ["ignore", "pipe", "pipe"]
+    stdio: ["ignore", "pipe", "pipe"], windowsHide: true
   });
   child.stdout.on("data", (chunk) => { output.text += chunk.toString(); });
   child.stderr.on("data", (chunk) => { output.text += chunk.toString(); });
@@ -179,7 +201,7 @@ test("token admission creates rooms and room controls keep working", async () =>
     assert.equal(buildInfoResponse.headers["cache-control"], "no-cache");
     assert.ok(["local", "host-a1"].includes(JSON.parse(buildInfoResponse.body).profile));
 
-    if (fs.existsSync(path.join(__dirname, "dist", "index.html.br"))) {
+    {
       const compressedRoute = await request(appPort, "/index.html", {
         headers: { "Accept-Encoding": "br, gzip" }
       });
@@ -188,17 +210,72 @@ test("token admission creates rooms and room controls keep working", async () =>
       assert.equal(compressedRoute.headers.vary, "Accept-Encoding");
     }
 
-    const assetDirectory = path.join(__dirname, "dist", "assets");
-    if (fs.existsSync(assetDirectory)) {
-      const hashedAsset = fs.readdirSync(assetDirectory).find((name) => /-[A-Za-z0-9_-]{8,}\.js$/.test(name));
-      if (hashedAsset) {
-        const assetRoute = await request(appPort, "/assets/" + hashedAsset);
+    {
+        const assetRoute = await request(appPort, "/assets/app-fixture123.js");
         assert.equal(assetRoute.status, 200);
         assert.equal(assetRoute.headers["cache-control"], "public, max-age=31536000, immutable");
-      }
     }
+
+    await t.test("uploads require a session and reject oversized bodies before reading", async () => {
+      assert.equal((await request(appPort, "/api/share", { method: "POST" }, "x")).status, 401);
+      const response = await request(appPort, "/api/share", { method: "POST", headers: {
+        "X-Maze-Session": token.session, "Content-Length": String(1024 * 1024 + 1)
+      } });
+      assert.equal(response.status, 413);
+    });
+
+    const guest = JSON.parse((await request(appPort, "/token?room=testeroom&name=Bia")).body);
+    const guestOptions = { method: "POST", headers: { "X-Maze-Session": guest.session } };
+    await t.test("an interrupted upload releases global and session reservations", async () => {
+      const pending = http.request({ hostname: "127.0.0.1", port: appPort, path: "/api/share", method: "POST",
+        headers: { "X-Maze-Session": token.session, "Content-Length": "1024", Expect: "100-continue" }
+      });
+      pending.on("error", () => {});
+      pending.setTimeout(3000, () => pending.destroy());
+      try {
+        const ready = once(pending, "continue");
+        pending.flushHeaders();
+        await ready;
+        assert.equal((await request(appPort, "/api/share", guestOptions, "x")).status, 429);
+      } finally {
+        const closed = new Promise((resolve) => pending.once("close", resolve));
+        pending.destroy();
+        await closed;
+      }
+      // Wait for the server to observe the socket close, not for a fixed sleep.
+      let uploaded;
+      for (let attempt = 0; attempt < 20; attempt++) {
+        uploaded = await request(appPort, "/api/share?name=sample.txt&type=text/plain", guestOptions, "x");
+        if (uploaded.status !== 429) break;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      assert.equal(uploaded.status, 200);
+      const download = await request(appPort, JSON.parse(uploaded.body).url);
+      assert.equal(download.body, "x");
+      assert.equal(download.headers["x-content-type-options"], "nosniff");
+    });
+    await t.test("capacity is reserved for chunked bodies before buffering", async () => {
+      const response = await request(appPort, "/api/share", { method: "POST", headers: {
+        "X-Maze-Session": token.session, "Transfer-Encoding": "chunked"
+      } });
+      // One stored byte + the unknown body's 1 MiB reservation exceeds the cap.
+      assert.equal(response.status, 507);
+    });
+    await t.test("upload frequency and tiny-file count have independent limits", async () => {
+      assert.equal((await request(appPort, "/api/share", guestOptions, "y")).status, 200);
+      assert.equal((await request(appPort, "/api/share", guestOptions, "z")).status, 200);
+      const rate = await request(appPort, "/api/share", guestOptions, "w");
+      assert.equal(rate.status, 429);
+      assert.ok(Number(rate.headers["retry-after"]) > 0);
+      const count = await request(appPort, "/api/share", {
+        method: "POST", headers: { "X-Maze-Session": token.session }
+      }, "w");
+      assert.equal(count.status, 507);
+    });
   } finally {
+    const stopped = once(child, "close");
     child.kill();
+    await stopped;
     await close(livekit);
   }
 });

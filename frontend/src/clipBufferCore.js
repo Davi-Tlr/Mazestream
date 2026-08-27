@@ -1,4 +1,25 @@
 const KEYFRAME_MARGIN_SECONDS = 4;
+export const MAX_CLIP_BUFFER_BYTES = 48 * 1024 * 1024;
+export const MAX_CLIP_PACKETS = 12000;
+
+export function clipPacketBytes(packet) {
+  return Math.max(0, Number(packet.byteLength ?? packet.data?.byteLength) || 0)
+    + Math.max(0, Number(packet.sideData?.alphaByteLength ?? packet.sideData?.alpha?.byteLength) || 0);
+}
+
+export function appendClipPacket(runtime, kind, packet, meta) {
+  const bytes = clipPacketBytes(packet);
+  if (runtime.bufferedBytes + bytes > MAX_CLIP_BUFFER_BYTES
+      || runtime.video.length + runtime.audio.length >= MAX_CLIP_PACKETS) {
+    throw new Error("O buffer de clipes atingiu o limite de memória. Desative e reative os clipes para tentar novamente.");
+  }
+  runtime[kind].push({ packet: packet.clone(), meta, order: runtime.order++, bytes });
+  runtime.bufferedBytes += bytes;
+}
+
+export function bufferedPacketBytes(video, audio) {
+  return video.concat(audio).reduce((sum, entry) => sum + (entry.bytes ?? clipPacketBytes(entry.packet)), 0);
+}
 
 export function pruneRollingPackets(videoEntries, audioEntries, latestTimestamp, maxSeconds) {
   if (!videoEntries.length) return { video: [], audio: [] };
@@ -47,4 +68,3 @@ export function selectClipEntries(videoEntries, audioEntries, latestTimestamp, s
   ));
   return { startTimestamp, endTimestamp: latestTimestamp, video, audio };
 }
-

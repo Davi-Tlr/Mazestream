@@ -19,7 +19,21 @@ export function encodeInteractionForTransport(value, targetBytes = 12 * 1024) {
     delete compact.pts;
     encoded = encodeInteraction(compact);
   }
+  if (encoded.byteLength > targetBytes) throw new RangeError("Pacote de interação grande demais.");
   return encoded;
+}
+
+export function prepareInteractionPublication(data, reliable = false, destinationIdentities) {
+  // A stroke is emitted once on pointer-up, not as a stream of cursor samples.
+  // Retransmit that bounded final result; keep high-frequency pointers lossy.
+  const isReliable = reliable || data.type === "stroke" || data.t === "risco";
+  return {
+    payload: encodeInteractionForTransport(data, isReliable ? 12 * 1024 : 1300),
+    options: {
+      reliable: isReliable, topic: INTERACTION_TOPIC,
+      ...(destinationIdentities?.length ? { destinationIdentities } : {})
+    }
+  };
 }
 
 export function decodeInteraction(payload) {

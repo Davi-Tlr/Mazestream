@@ -45,6 +45,16 @@ Se o relay também mudou, faça a atualização dele separadamente com o perfil 
 
 Após atualizar, confira `/build-info.json`, a entrada na sala e a recepção de áudio/vídeo em outro dispositivo. Recarregue o navegador se ainda estiver com assets antigos. O SHA publicado e o perfil precisam corresponder ao pacote escolhido.
 
+Nesta atualização, todos os participantes devem recarregar a página e entrar novamente na sala: o histórico do quadro usa um protocolo novo com resposta direcionada e identificação da solicitação. A recuperação de histórico entre clientes antigos e novos não é garantida. Programe a atualização com a sala vazia; não há migração ou armazenamento durável do quadro.
+
+## Arquivos temporários e limites
+
+O upload exige sessão. Por padrão, cada arquivo pode ter até 8 MiB, com 32 MiB para dados armazenados e reservas de uploads em andamento, até 128 arquivos, duas transferências simultâneas no servidor e uma por sessão. São aceitos até seis inícios de upload por minuto por sessão. Interromper um envio libera sua reserva; tentativas aceitas continuam contando na janela de frequência.
+
+Os limites são configuráveis pelas variáveis `SHARE_*` em `host-a1.env.example` e repassados pelo Compose. Arquivos expiram em 60 minutos por padrão e são perdidos ao reiniciar a API. O limite de dados não é um teto do RSS do processo: existem cópias transitórias, metadados e o custo do runtime.
+
+O download funciona por posse do link, sem autenticar novamente a sessão. Não envie segredos ou documentos confidenciais; quem receber o link poderá acessar o arquivo enquanto ele estiver disponível.
+
 ## Rollback
 
 Restaure os arquivos do pacote anterior e aplique novamente o mesmo comando Compose, mantendo as credenciais compatíveis. Preserve também a identificação das imagens usadas: tags de runtime podem receber atualizações de patch.

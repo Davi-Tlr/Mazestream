@@ -26,10 +26,13 @@ const MAX_PARTICIPANTS_PER_ROOM = boundedInt("MAX_PARTICIPANTS_PER_ROOM", 10, 2,
 const TOKENS_POR_SEG = boundedInt("TOKENS_POR_SEG", 20, 1, 1000);
 const PORT = boundedInt("PORT", 3000, 1, 65535);
 const HOST = process.env.HOST || "0.0.0.0";
-const DIST = path.join(__dirname, "dist");
+const DIST = path.resolve(process.env.MAZESTREAM_DIST_DIR || path.join(__dirname, "dist"));
 const SHARE_MAX_MB = boundedInt("SHARE_MAX_MB", 8, 1, 20);
 const SHARE_TOTAL_MB = Math.max(SHARE_MAX_MB, boundedInt("SHARE_TOTAL_MB", 32, 1, 128));
 const SHARE_TTL_MS = boundedInt("SHARE_TTL_MIN", 60, 5, 180) * 60 * 1000;
+const SHARE_MAX_FILES = boundedInt("SHARE_MAX_FILES", 128, 1, 1024);
+const SHARE_MAX_UPLOADS = boundedInt("SHARE_MAX_UPLOADS", 2, 1, 4);
+const SHARE_UPLOADS_PER_MINUTE = boundedInt("SHARE_UPLOADS_PER_MINUTE", 6, 1, 60);
 const ROOM_STATE_TTL_MS = 12 * 60 * 60 * 1000;
 const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 
@@ -116,6 +119,8 @@ const roomConfigs = new Map();
 const sessions = new Map();
 const sharedFiles = new Map();
 let sharedBytes = 0;
+let pendingShareBytes = 0;
+let pendingShares = 0;
 
 function getRoomConfig(room, create = false, requestedPreset = "livre") {
   let config = roomConfigs.get(room);
@@ -303,21 +308,35 @@ function readBody(req, maxBytes) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;
-    let tooLarge = false;
+    let settled = false;
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      chunks.length = 0;
+      reject(error);
+    };
     req.on("data", (chunk) => {
-      if (tooLarge) return;
+      if (settled) return;
       size += chunk.length;
       if (size > maxBytes) {
-        tooLarge = true;
-        chunks.length = 0;
+        fail(Object.assign(new Error("corpo grande"), { statusCode: 413 }));
         req.resume();
-        reject(Object.assign(new Error("corpo grande"), { statusCode: 413 }));
         return;
       }
       chunks.push(chunk);
     });
-    req.on("end", () => { if (!tooLarge) resolve(Buffer.concat(chunks)); });
-    req.on("error", reject);
+    req.on("end", () => {
+      if (settled) return;
+      settled = true;
+      const body = Buffer.concat(chunks, size);
+      chunks.length = 0;
+      resolve(body);
+    });
+    req.on("aborted", () => fail(Object.assign(new Error("upload interrompido"), { statusCode: 400 })));
+    req.on("close", () => {
+      if (!req.complete) fail(Object.assign(new Error("requisição interrompida"), { statusCode: 400 }));
+    });
+    req.on("error", fail);
   });
 }
 async function readJson(req, maxBytes = 64 * 1024) {
@@ -615,28 +634,65 @@ async function handleRoomControl(req, res) {
 
 async function handleShare(req, res, url) {
   if (req.method !== "POST") { res.writeHead(405); res.end("metodo"); return; }
+  const refuse = (status, motivo) => {
+    // Do not keep an unread request body alive on a rejected upload.
+    res.setHeader("Connection", "close");
+    json(res, status, { error: "arquivo", motivo });
+    req.resume();
+  };
   const session = getSession(req);
-  if (!session) { json(res, 401, { error: "session", motivo: "Sessão expirada." }); return; }
+  if (!session) { refuse(401, "Sessão expirada."); return; }
   const maxBytes = SHARE_MAX_MB * 1024 * 1024;
-  let buffer;
-  try { buffer = await readBody(req, maxBytes); }
-  catch (e) { json(res, e.statusCode || 400, { error: "arquivo", motivo: "Arquivo grande demais. Limite: " + SHARE_MAX_MB + " MB." }); return; }
-  if (!buffer.length) { json(res, 400, { error: "arquivo", motivo: "Arquivo vazio." }); return; }
-  cleanupEphemeral();
-  if (sharedBytes + buffer.length > SHARE_TOTAL_MB * 1024 * 1024) {
-    json(res, 507, { error: "limite", motivo: "O espaço temporário de arquivos está cheio. Tente novamente mais tarde." });
-    return;
+  const length = req.headers["content-length"];
+  const declaredBytes = length === undefined ? null : Number(length);
+  if (declaredBytes !== null && (!Number.isSafeInteger(declaredBytes) || declaredBytes < 0 || declaredBytes > maxBytes)) {
+    refuse(413, "Arquivo grande demais. Limite: " + SHARE_MAX_MB + " MB."); return;
   }
-  const id = randomKey(18);
-  const rawName = String(url.searchParams.get("name") || "arquivo").replace(/[\r\n\t]/g, " ").slice(0, 120) || "arquivo";
-  const rawType = String(url.searchParams.get("type") || "application/octet-stream").slice(0, 100);
-  const safeType = /^(image\/(png|jpeg|webp|gif)|application\/pdf|text\/plain)$/i.test(rawType) ? rawType : "application/octet-stream";
-  sharedFiles.set(id, {
-    buffer, name: rawName, type: safeType, room: session.room,
-    expiresAt: Date.now() + SHARE_TTL_MS
-  });
-  sharedBytes += buffer.length;
-  json(res, 200, { id, name: rawName, type: safeType, size: buffer.length, url: "/shared/" + id });
+  if (declaredBytes === 0) { refuse(400, "Arquivo vazio."); return; }
+  cleanupEphemeral();
+  if (session.uploadInFlight || pendingShares >= SHARE_MAX_UPLOADS) {
+    res.setHeader("Retry-After", "2");
+    refuse(429, "Há uploads em andamento. Aguarde e tente novamente."); return;
+  }
+  const now = Date.now();
+  const window = session.uploadWindow;
+  if (!window || now - window.start >= 60000) session.uploadWindow = { start: now, count: 0 };
+  if (session.uploadWindow.count >= SHARE_UPLOADS_PER_MINUTE) {
+    res.setHeader("Retry-After", String(Math.max(1, Math.ceil((session.uploadWindow.start + 60000 - now) / 1000))));
+    refuse(429, "Limite de uploads por minuto atingido. Aguarde para enviar outro arquivo."); return;
+  }
+  // Reserve capacity before reading. Chunked bodies reserve their maximum.
+  // The file-count cap also bounds metadata for many tiny files.
+  const reservedBytes = declaredBytes ?? maxBytes;
+  if (sharedFiles.size + pendingShares >= SHARE_MAX_FILES
+      || sharedBytes + pendingShareBytes + reservedBytes > SHARE_TOTAL_MB * 1024 * 1024) {
+    refuse(507, "O espaço temporário de arquivos está cheio. Tente novamente mais tarde."); return;
+  }
+  session.uploadWindow.count += 1;
+  session.uploadInFlight = true;
+  pendingShares += 1;
+  pendingShareBytes += reservedBytes;
+  try {
+    const buffer = await readBody(req, reservedBytes);
+    if (!buffer.length) { refuse(400, "Arquivo vazio."); return; }
+    const id = randomKey(18);
+    const rawName = String(url.searchParams.get("name") || "arquivo").replace(/[\r\n\t]/g, " ").slice(0, 120) || "arquivo";
+    const rawType = String(url.searchParams.get("type") || "application/octet-stream").slice(0, 100);
+    const safeType = /^(image\/(png|jpeg|webp|gif)|application\/pdf|text\/plain)$/i.test(rawType) ? rawType : "application/octet-stream";
+    sharedFiles.set(id, {
+      buffer, name: rawName, type: safeType, room: session.room,
+      expiresAt: Date.now() + SHARE_TTL_MS
+    });
+    sharedBytes += buffer.length;
+    json(res, 200, { id, name: rawName, type: safeType, size: buffer.length, url: "/shared/" + id });
+  } catch (error) {
+    if (!res.destroyed && !res.headersSent) refuse(error.statusCode || 400,
+      error.statusCode === 413 ? "Arquivo grande demais. Limite: " + SHARE_MAX_MB + " MB." : "O envio foi interrompido. Tente novamente.");
+  } finally {
+    session.uploadInFlight = false;
+    pendingShares -= 1;
+    pendingShareBytes -= reservedBytes;
+  }
 }
 
 function handleSharedFile(req, res, id) {

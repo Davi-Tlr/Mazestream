@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="frontend/package.json"><img src="https://img.shields.io/badge/React-18.3.1-149ECA?style=flat-square&amp;logo=react&amp;logoColor=white" alt="React 18.3.1"></a>
-  <a href="frontend/package.json"><img src="https://img.shields.io/badge/LiveKit%20Client-2.22.0-7C3AED?style=flat-square" alt="LiveKit Client 2.22.0"></a>
+  <a href="frontend/package.json"><img src="https://img.shields.io/badge/LiveKit%20Client-2.22.1-7C3AED?style=flat-square" alt="LiveKit Client 2.22.1"></a>
   <a href=".nvmrc"><img src="https://img.shields.io/badge/Node.js-24%20LTS-339933?style=flat-square&amp;logo=nodedotjs&amp;logoColor=white" alt="Node.js 24 LTS"></a>
   <a href="docker-compose.yaml"><img src="https://img.shields.io/badge/Docker-Compose-2496ED?style=flat-square&amp;logo=docker&amp;logoColor=white" alt="Docker Compose"></a>
 </p>
@@ -287,6 +287,7 @@ Quadro, controles de sala e arquivos compartilhados são dados de sessão, não 
 | [Desenvolvimento](docs/DEVELOPMENT.md) | Ambiente local, comandos, estrutura e identificação dos builds |
 | [Self-hosting](docs/DEPLOYMENT.md) | Instalação, configuração, Discord, atualização e rollback |
 | [CI/CD e releases](docs/CI-CD.md) | Branches, validações automáticas e distribuição dos pacotes |
+| [Validação de release](docs/RELEASE-CHECKLIST.md) | Correções de estabilização e testes necessários antes da publicação |
 | [Perfis](PROFILES.md) | Qualidade de transmissão e limites de CPU, memória e banda |
 
 ## Licença

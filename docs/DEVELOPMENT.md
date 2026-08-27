@@ -17,6 +17,8 @@ As pastas existentes foram mantidas para reduzir movimentação de código. O ba
 
 Um único `npm ci` na raiz instala os workspaces. Não crie lockfiles nas subpastas. Para adicionar uma dependência ao aplicativo, use `npm install <pacote> --workspace=@mazestream/web` e revise a alteração no lockfile.
 
+Use Node.js 24 LTS, conforme `.nvmrc` e o CI. A alternativa suportada é Node.js 22.22 ou superior da linha 22; versões anteriores, como 22.17, não atendem ao requisito de uma dependência transitiva do SDK LiveKit. Confira `node --version` antes de instalar.
+
 ## Comandos
 
 | Comando na raiz | Finalidade |
@@ -27,7 +29,7 @@ Um único `npm ci` na raiz instala os workspaces. Não crie lockfiles nas subpas
 | `npm run local:up` / `local:down` | Iniciar/parar o LiveKit de localhost |
 | `npm run build:local` / `build:host` | Compilar o perfil em `frontend/dist` |
 | `npm run check` | Estrutura, lockfile, sintaxe JavaScript e links da documentação |
-| `npm test` | Testes dos pacotes e do empacotamento; requer build anterior |
+| `npm test` | Testes dos pacotes e do empacotamento; não requer build anterior |
 | `npm run verify` | Verificar, compilar e testar ambos os perfis |
 | `npm run release:local` / `release:selfhost` | Gerar somente uma distribuição, com validação |
 | `npm run release:packages` | Gerar ambas, com validação |
@@ -47,7 +49,11 @@ O ambiente de localhost é para a própria máquina. Para testar dois dispositiv
 
 `npm test` cobre lógica e contratos HTTP, mas não opera o seletor nativo de compartilhamento, não mede perda de pacotes e não exercita NAT/TURN de verdade. O build valida sintaxe JSX e resolução de imports; `check` não é um lint completo de estilo ou uma auditoria de segurança.
 
+Os testes HTTP criam e removem seus próprios assets temporários, sem depender de `frontend/dist`. O empacotamento faz outra verificação HTTP com o build real de cada perfil. A sincronização do quadro é testada com eventos e transporte simulados; os testes de clipes verificam buffers e montagem/cancelamento, não a decodificação de um vídeo real.
+
 Antes de um release, faça uma sessão entre dois dispositivos: entrar/sair, transmitir com áudio, parar e retomar, alternar a tela, testar clipe, desenho temporário/quadro, votação e reconexão. Registre versão, navegador e sistema de ambos os lados. Compare o vídeo recebido, não apenas a prévia de quem transmite.
+
+Use o [checklist de release](RELEASE-CHECKLIST.md) para registrar a aprovação e as limitações conhecidas.
 
 ## Identificar um build
 
