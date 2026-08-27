@@ -49,7 +49,9 @@ for (const profile of profiles) {
   writeChecksums(stage);
   await smokePackage(stage, profile);
   const archive = path.join(output, `${name}.tar.gz`);
-  execFileSync("tar", ["-czf", archive, "-C", output, name], { stdio: "inherit" });
+  // GNU tar (Git Bash) interprets C: in an archive argument as a remote host.
+  // A relative filename and process cwd also work with Windows/macOS bsdtar.
+  execFileSync("tar", ["-czf", path.basename(archive), name], { cwd: output, stdio: "inherit" });
   archives.push(`${sha256(archive)}  ${path.basename(archive)}`);
   packages[profile] = path.relative(root, stage).replaceAll(path.sep, "/");
   console.log(`Pacote ${profile}: ${archive}`);
