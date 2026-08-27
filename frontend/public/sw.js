@@ -1,6 +1,6 @@
 // Service worker minimo: guarda a casca do app para instalacao como PWA.
 // Midia ao vivo, tokens, controles de sala e arquivos temporarios nunca entram no cache.
-const CACHE = "sala-v2";
+const CACHE = "sala-v3";
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll([
@@ -27,7 +27,20 @@ self.addEventListener("fetch", (event) => {
     || url.pathname.startsWith("/api/")
     || url.pathname.startsWith("/shared/")) return;
 
-  event.respondWith(
-    fetch(request).catch(() => caches.match(request).then((cached) => cached || caches.match("/")))
-  );
+  event.respondWith((async () => {
+    try {
+      return await fetch(request);
+    } catch (error) {
+      const cached = await caches.match(request);
+      if (cached) return cached;
+      // Only navigations may fall back to the cached application shell.
+      // Returning index.html for a missing JS/CSS asset causes MIME errors and
+      // a blank screen after an offline deploy or a stale service worker.
+      if (request.mode === "navigate") {
+        const shell = await caches.match("/");
+        if (shell) return shell;
+      }
+      return Response.error();
+    }
+  })());
 });

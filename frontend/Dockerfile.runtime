@@ -1,0 +1,9 @@
+# Contexto: raiz do pacote self-hosted. Assets ja compilados no PC ou no CI.
+FROM node:24-alpine
+WORKDIR /app
+ENV NODE_ENV=production
+COPY frontend/server.cjs frontend/server-votekick.cjs ./
+COPY frontend/dist ./dist
+USER node
+EXPOSE 3000
+CMD ["node", "server.cjs"]

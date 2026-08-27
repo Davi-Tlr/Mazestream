@@ -1,23 +1,38 @@
 # Ajustes de streaming aplicados
 
-Este pacote foi ajustado para LiveKit JS 2.22.0 com foco em screen share de jogos/movimento.
+Configuracao atual validada com `livekit-client` 2.22.0 e LiveKit Server 1.13.6.
 
-- envio padrão: 720p30, até 1.8 Mbps;
-- 1080p30 continua disponível, agora limitado a 4 Mbps;
-- 540p30: até 850 kbps;
-- `degradationPreference: "maintain-framerate"` para privilegiar fluidez em congestionamento;
-- simulcast mantido ligado e `dynacast` ligado para pausar camadas não consumidas;
-- `adaptiveStream: true` fica responsável pela escolha automática de qualidade recebida conforme o elemento visível;
-- o modo "Automática" não chama mais `setVideoQuality(HIGH)`;
-- migração de localStorage evita que instalações antigas continuem presas no antigo padrão 1080p/6 Mbps;
-- Dockerfile usa `npm ci` com o lockfile para build reproduzível.
+- envio hospedado: 1080p30, ate 4 Mbps; o perfil local conserva o teto de 5 Mbps;
+- modo **Detalhes** usa VP8, `contentHint: detail`, prioridade de resolucao e
+  simulcast espacial;
+- modo **Movimento** prefere VP9 quando suportado e prioriza framerate;
+- `adaptiveStream` e `dynacast` continuam ativos;
+- compartilhar, conectar, pausar, retomar e encerrar possuem travas contra
+  operacoes concorrentes e nao escondem mais falhas parciais;
+- falha ao pausar encerra as faixas por seguranca, evitando audio invisivel;
+- o buffer de clipes fica desligado por padrao e so usa um segundo encoder quando
+  o usuario o ativa para uma tela;
+- clipes com duas telas associam audio e video pelo nome da publicacao;
+- volume foi normalizado para o intervalo suportado pelo SDK (`0..1`);
+- microfone e camera refletem o estado real do `LocalParticipant`;
+- o servidor cria salas com limite real de 10 pessoas por padrao;
+- a imagem do LiveKit Server foi fixada em `v1.13.6` para deploy reproduzivel,
+  com rollback para `v1.13.5` pela variavel `LIVEKIT_SERVER_IMAGE`;
+- o perfil `host-a1` aplica limites de CPU/memoria por container sem criar um
+  fork do frontend;
+- assets estaticos sao precomprimidos no build e servidos com cache imutavel;
+- a v1.13.6 contem a correcao da migracao por UDP instavel, mas essa opcao
+  experimental permanece desligada no modo Caddy porque o fallback de RTT alto
+  dependeria de TURN/TLS; o fallback TCP normal continua ativo.
 
-Referências principais:
-- https://docs.livekit.io/reference/client-sdk-js/interfaces/RoomOptions.html
-- https://docs.livekit.io/reference/client-sdk-js/interfaces/TrackPublishOptions.html
-- https://docs.livekit.io/reference/client-sdk-js/classes/RemoteTrackPublication.html
-- https://docs.livekit.io/reference/client-sdk-js/variables/ScreenSharePresets.html
-- https://docs.livekit.io/transport/self-hosting/deployment/
-- https://docs.livekit.io/transport/self-hosting/ports-firewall/
+O relay do Discord mede os bytes reais do SFU pelo endpoint Prometheus, usa as
+faixas publicadas para o detalhamento por sala, envia alertas automaticos e oferece
+`/banda` quando as credenciais do Discord App estao configuradas.
 
-Observação: erros HTTP 502 em `/rtc` são do caminho de sinalização/reverse proxy e não são corrigíveis apenas no frontend. Este pacote melhora a mídia e o comportamento de reconexão/estado, mas um 502 persistente ainda deve ser corrigido no Caddy/LiveKit.
+Referencias principais:
+
+- https://docs.livekit.io/transport/media/advanced/
+- https://docs.livekit.io/transport/media/subscribe/
+- https://docs.livekit.io/transport/self-hosting/vm/
+- https://github.com/livekit/client-sdk-js/blob/v2.22.0/src/room/participant/LocalParticipant.ts
+- https://docs.discord.com/developers/interactions/overview

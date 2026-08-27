@@ -1,0 +1,11 @@
+{
+  "name": "@mazestream/discord-relay",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "description": "Eventos e monitoramento de banda do LiveKit para o Discord.",
+  "scripts": {
+    "start": "node --env-file-if-exists=.env index.js",
+    "test": "node --test bandwidth.test.cjs"
+  }
+}

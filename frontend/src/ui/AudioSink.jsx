@@ -19,8 +19,8 @@ const AudioSink = memo(function AudioSink({ track, volume, muteAll, personVolume
   useEffect(() => {
     const muted = muteAll || (volume && volume.muted);
     const trackLevel = (volume ? volume.value : 100) / 100;
-    const personLevel = Math.max(0, Math.min(150, personVolume)) / 100;
-    const level = muted ? 0 : Math.min(1.5, trackLevel * personLevel);
+    const personLevel = Math.max(0, Math.min(100, personVolume)) / 100;
+    const level = muted ? 0 : Math.max(0, Math.min(1, trackLevel * personLevel));
     if (track && track.setVolume) { try { track.setVolume(level); } catch (e) {} }
     if (elRef.current) elRef.current.muted = !!muted;
   }, [track, volume, muteAll, personVolume]);

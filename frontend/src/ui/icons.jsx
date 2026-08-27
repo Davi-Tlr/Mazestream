@@ -19,28 +19,13 @@ export function Moon(props) {
   );
 }
 
-function FilledShape({ d, ...props }) {
-  return (
-    <svg className="ic" viewBox="0 0 24 24" width="1em" height="1em"
-      fill="currentColor" aria-hidden="true" {...props}><path d={d} /></svg>
-  );
-}
-
-export const HeartShape = (props) => <FilledShape {...props} d="M12 21S3 14.6 3 8.9A5 5 0 0 1 12 6a5 5 0 0 1 9 2.9C21 14.6 12 21 12 21z" />;
-export const FlameShape = (props) => <FilledShape {...props} d="M12 2s5 4.6 5 9a5 5 0 0 1-10 0c0-1.4.5-2.6 1.2-3.6.2 1.3.9 2.2 1.8 2.4-.5-2.6.5-5.6 2-7.8z" />;
-export const BoltShape = (props) => <FilledShape {...props} d="M13 2 4 13.5h5.5L10 22l9-11.5h-5.5L13 2z" />;
-export const StarShape = (props) => <FilledShape {...props} d="m12 2 2.9 6.3 6.8.8-5 4.7 1.3 6.8L12 17.3 5.9 20.6l1.4-6.8-5-4.7 6.8-.8L12 2z" />;
-
 export const REACTIONS = [
-  { key: "heart", Icon: HeartShape, label: "Amei" },
-  { key: "flame", Icon: FlameShape, label: "Fogo" },
-  { key: "bolt", Icon: BoltShape, label: "Chocado" },
-  { key: "star", Icon: StarShape, label: "Destaque" }
+  { key: "heart", emoji: "❤️", label: "Amei" },
+  { key: "laugh", emoji: "😂", label: "Muito bom" },
+  { key: "wow", emoji: "😮", label: "Uau" },
+  { key: "fire", emoji: "🔥", label: "Fogo" },
+  { key: "clap", emoji: "👏", label: "Aplausos" },
+  { key: "thumbsUp", emoji: "👍", label: "Gostei" },
+  { key: "party", emoji: "🎉", label: "Boa!" },
+  { key: "skull", emoji: "💀", label: "Morri" }
 ];
-
-export const REACTION_ICONS = {
-  heart: HeartShape,
-  flame: FlameShape,
-  bolt: BoltShape,
-  star: StarShape
-};

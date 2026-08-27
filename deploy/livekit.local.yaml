@@ -1,0 +1,14 @@
+# Credenciais publicas de desenvolvimento; somente para a propria maquina.
+port: 7880
+rtc:
+  tcp_port: 7881
+  udp_port: 7882
+  use_external_ip: false
+  node_ip: 127.0.0.1
+  enable_loopback_candidate: true
+keys:
+  devkey: devsecret
+turn:
+  enabled: false
+logging:
+  level: info

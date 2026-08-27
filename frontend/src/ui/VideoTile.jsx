@@ -151,7 +151,7 @@ const VideoTile = memo(function VideoTile({
       {mostrarVolume && (
         <div className="vol-bar" onClick={(e) => e.stopPropagation()}>
           <span className="vol-lbl">Vol</span>
-          <Slider style={{ width: 92, margin: 0 }} min={0} max={150}
+          <Slider style={{ width: 92, margin: 0 }} min={0} max={100}
             value={volume.muted ? 0 : volume.value}
             onChange={(v) => onVolume(v)} tooltip={{ formatter: (v) => v + "%" }} />
           <Button size="small" onClick={(e) => { e.stopPropagation(); onMute(); }}>

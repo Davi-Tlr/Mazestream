@@ -1,6 +1,8 @@
-import { useRef, useState, useCallback } from "react";
+import { lazy, Suspense, useRef, useState, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { REACTION_ICONS } from "./icons.jsx";
+import { REACTION_EMOJIS } from "../interactions.js";
+
+const DrawingCanvas = lazy(() => import("./DrawingCanvas.jsx"));
 
 function Marker({ item }) {
   const marker = item.marker || "ring";
@@ -18,7 +20,7 @@ function Marker({ item }) {
 
 export default function SharedBoard({
   strokes, tool, brush, interactions, markerStyle = "ring", pendingReaction,
-  onStroke, onErase, onPing, onCursor, onReactionAt
+  onStroke, onPing, onCursor, onReactionAt
 }) {
   const areaRef = useRef(null);
   const currentRef = useRef(null);
@@ -26,7 +28,9 @@ export default function SharedBoard({
   const [liveStroke, setLiveStroke] = useState(null);
   const color = (brush && brush.color) || "#111111";
   const width = (brush && brush.width) || 5;
-  const drawing = tool === "draw" || tool === "eraser";
+  const drawTool = (brush && brush.tool) || "pen";
+  const opacity = drawTool === "marker" ? 0.32 : 1;
+  const drawing = tool === "draw";
 
   const getPoint = useCallback((event) => {
     const el = areaRef.current;
@@ -49,9 +53,9 @@ export default function SharedBoard({
     if (tool === "point") { onPing({ x: point[0], y: point[1] }, markerStyle); return; }
     if (tool === "reaction") { if (pendingReaction) onReactionAt({ x: point[0], y: point[1] }, pendingReaction); return; }
     if (!drawing) return;
-    if (tool === "eraser") { onErase(point); currentRef.current = "erasing"; return; }
-    currentRef.current = [point];
-    setLiveStroke([point]);
+    const points = [point];
+    currentRef.current = points;
+    setLiveStroke({ points, color, width, tool: drawTool, opacity });
   }
 
   function handleMove(event) {
@@ -69,12 +73,16 @@ export default function SharedBoard({
     }
     if (!drawing || !currentRef.current) return;
     event.stopPropagation();
-    if (tool === "eraser") { onErase(point); return; }
-    const points = currentRef.current;
+    let points = currentRef.current;
     const last = points[points.length - 1];
     if (Math.abs(point[0] - last[0]) < 0.003 && Math.abs(point[1] - last[1]) < 0.003) return;
-    points.push(point);
-    setLiveStroke(points.slice());
+    if (["line", "arrow", "rectangle", "ellipse"].includes(drawTool)) {
+      points = [points[0], point];
+      currentRef.current = points;
+    } else {
+      points.push(point);
+    }
+    setLiveStroke({ points: points.slice(), color, width, tool: drawTool, opacity });
   }
 
   function handleUp(event) {
@@ -82,12 +90,10 @@ export default function SharedBoard({
     event.stopPropagation();
     const points = currentRef.current;
     currentRef.current = null;
-    if (points === "erasing") return;
     setLiveStroke(null);
-    if (points.length > 1) onStroke(points, color, width);
+    if (points.length > 1) onStroke(points, color, width, drawTool, opacity);
   }
 
-  const path = (points) => points.map((point, index) => (index ? "L" : "M") + (point[0] * 100).toFixed(2) + " " + (point[1] * 100).toFixed(2)).join(" ");
   const pings = (interactions || []).filter((item) => item.type === "ping");
   const cursors = (interactions || []).filter((item) => item.type === "cursor");
   const reactions = (interactions || []).filter((item) => item.type === "reaction");
@@ -95,17 +101,10 @@ export default function SharedBoard({
   return (
     <div ref={areaRef} className={"shared-board" + (tool ? " interactive" : "")}
       onMouseDown={handleDown} onMouseMove={handleMove} onMouseUp={handleUp} onMouseLeave={handleUp}
-      onTouchStart={handleDown} onTouchMove={handleMove} onTouchEnd={handleUp}>
-      <svg viewBox="0 0 100 100" preserveAspectRatio="none">
-        {(strokes || []).map((stroke) => (
-          <path key={stroke.id} d={path(stroke.points)} fill="none" stroke={stroke.color} strokeWidth={stroke.width}
-            strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
-        ))}
-        {liveStroke && liveStroke.length > 1 && (
-          <path d={path(liveStroke)} fill="none" stroke={color} strokeWidth={width}
-            strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
-        )}
-      </svg>
+      onTouchStart={handleDown} onTouchMove={handleMove} onTouchEnd={handleUp} onTouchCancel={handleUp}>
+      <Suspense fallback={null}>
+        <DrawingCanvas actions={strokes || []} liveAction={liveStroke} />
+      </Suspense>
 
       {(strokes || []).length === 0 && !liveStroke && (
         <div className="shared-board-empty">Quadro compartilhado. Escolha uma ferramenta e desenhe.</div>
@@ -123,14 +122,16 @@ export default function SharedBoard({
       </AnimatePresence>
       <AnimatePresence>
         {reactions.map((reaction) => {
-          const Icon = REACTION_ICONS[reaction.reaction];
-          if (!Icon) return null;
+          const emoji = REACTION_EMOJIS[reaction.reaction];
+          if (!emoji) return null;
+          const drift = (reaction.drift || 0) * 82;
           return (
             <motion.div key={reaction.id} className="interaction-reaction board-reaction"
-              style={{ left: reaction.x * 100 + "%", top: reaction.y * 100 + "%", fontSize: 22 + (reaction.size || 0) * 16 }}
-              initial={{ y: 0, opacity: 0, scale: 0.4 }} animate={{ y: -210, opacity: [0, 1, 1, 0], scale: 1 }}
+              style={{ left: reaction.x * 100 + "%", top: reaction.y * 100 + "%", fontSize: 30 + (reaction.size || 0) * 20 }}
+              initial={{ y: 0, x: 0, opacity: 0, scale: 0.4 }}
+              animate={{ y: -210, x: [0, drift * 0.5, drift * -0.35, drift], opacity: [0, 1, 1, 0], scale: [0.4, 1.14, 1, 0.92] }}
               exit={{ opacity: 0 }} transition={{ duration: 3.2 + (reaction.speed || 0), ease: "easeOut" }}>
-              <Icon /><span className="interaction-author">{reaction.author}</span>
+              <span className="reaction-emoji">{emoji}</span>
             </motion.div>
           );
         })}

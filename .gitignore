@@ -9,6 +9,15 @@ dist/
 .env
 .env.local
 .env.production
+.env.*
+!.env.example
+!*.env.example
+!frontend/.env.host-a1
+!frontend/.env.local-preview
+
+# Pacotes de release e relatorios gerados localmente
+artifacts/
+coverage/
 
 # Dados do Redis
 dump.rdb

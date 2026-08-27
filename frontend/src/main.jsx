@@ -8,7 +8,7 @@ import App from "./App.jsx";
 import "./styles.css";
 import "./interactions.css";
 
-if ("serviceWorker" in navigator) {
+if (import.meta.env.PROD && "serviceWorker" in navigator) {
   window.addEventListener("load", function () {
     navigator.serviceWorker.register("/sw.js").catch(function () {});
   });

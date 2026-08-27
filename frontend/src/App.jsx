@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo, useCallback } from "react";
+import { lazy, Suspense, useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { App as AntApp } from "antd";
 import { Track, VideoQuality, RoomEvent } from "livekit-client";
 import { useRoom } from "./useRoom.js";
@@ -12,16 +12,19 @@ import { DEFAULT_SETTINGS } from "./constants.js";
 import { useClipBuffer } from "./useClipBuffer.js";
 import {
   ROOM_TOPIC, ROOM_PRESETS, encodeRoomData, decodeRoomData, newRoomMessageId,
-  sanitizeChatText, sanitizeFileMeta, normalizePresenter, presenterMatchesTile
+  sanitizeChatText, sanitizeFileMeta, normalizePresenter, presenterMatchesTile, normalizeRoomName
 } from "./roomFeatures.js";
 import {
-  INTERACTION_TOPIC, encodeInteraction, decodeInteraction, newInteractionId,
+  INTERACTION_TOPIC, encodeInteractionForTransport, decodeInteraction, newInteractionId,
   INTERACTION_LIFETIME, DRAW_COLORS, DRAW_WIDTHS,
-  sanitizePoints, sanitizeColor, sanitizeWidth,
-  REACTION_TO_WIRE, REACTION_FROM_WIRE, LEGACY_TYPE_MAP, MARKER_STYLES
+  sanitizeDrawAction,
+  REACTION_EMOJIS, REACTION_TO_WIRE, REACTION_FROM_WIRE, LEGACY_TYPE_MAP, MARKER_STYLES
 } from "./interactions.js";
 import JoinScreen from "./ui/JoinScreen.jsx";
-import RoomView from "./ui/RoomView.jsx";
+
+// The login screen does not need the full room toolbar, Konva board or motion
+// components. Keep that surface in a deferred chunk so first paint stays light.
+const RoomView = lazy(() => import("./ui/RoomView.jsx"));
 
 const RECEIVE_QUALITY_MAP = {
   high: VideoQuality.HIGH,
@@ -34,12 +37,15 @@ const OLD_QUALITY_MAP = { alta: "high", media: "medium", baixa: "low", auto: "au
 function loadSettings() {
   try {
     const saved = JSON.parse(localStorage.getItem("ajustes") || "{}");
+    const savedVersion = Number(saved.configVersion) || 0;
+    const savedQuality = saved.sendQuality || OLD_QUALITY_MAP[saved.qualidadeEnvio];
     return {
       ...DEFAULT_SETTINGS,
       ...saved,
       configVersion: DEFAULT_SETTINGS.configVersion,
       audioOnShare: saved.audioOnShare ?? saved.audioAoCompartilhar ?? DEFAULT_SETTINGS.audioOnShare,
-      sendQuality: saved.sendQuality || OLD_QUALITY_MAP[saved.qualidadeEnvio] || DEFAULT_SETTINGS.sendQuality,
+      sendQuality: savedVersion >= 4 && savedQuality ? savedQuality : DEFAULT_SETTINGS.sendQuality,
+      shareContent: ["motion", "detail"].includes(saved.shareContent) ? saved.shareContent : DEFAULT_SETTINGS.shareContent,
       receiveQuality: saved.receiveQuality || OLD_QUALITY_MAP[saved.qualidadeRecebo] || DEFAULT_SETTINGS.receiveQuality,
       muteAll: saved.muteAll ?? saved.silenciarTudo ?? DEFAULT_SETTINGS.muteAll,
       startMuted: saved.startMuted ?? saved.iniciarMutado ?? DEFAULT_SETTINGS.startMuted,
@@ -70,23 +76,32 @@ function loadPeopleSettings() {
   }
 }
 
+async function fetchWithTimeout(input, init = {}, timeoutMs = 10000) {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
 export default function App() {
   const { message } = AntApp.useApp();
   const {
     roomRef, connState, connect, disconnect,
     trackVer, partVer, metaVer, qualityVer, permissionVer,
-    audioBlocked, enableAudio
+    audioBlocked, enableAudio, lastError
   } = useRoom();
 
   const [phase, setPhase] = useState("join");
   const [joining, setJoining] = useState(false);
+  const joiningRef = useRef(false);
   const [currentRoom, setCurrentRoom] = useState("");
   const [settings, setSettings] = useState(loadSettings);
   const [peopleSettings, setPeopleSettings] = useState(loadPeopleSettings);
   const [volumes, setVolumes] = useState({});
   const [selected, setSelected] = useState(null);
-  const [micOn, setMicOn] = useState(false);
-  const [camOn, setCamOn] = useState(false);
   const [sessionKey, setSessionKey] = useState("");
   const [isHost, setIsHost] = useState(false);
   const [roomRole, setRoomRole] = useState("participant");
@@ -113,6 +128,28 @@ export default function App() {
   const myState = useMemo(() => readState(room ? room.localParticipant : null), [room, metaVer]);
   const localCanPublish = useMemo(() => !room || !room.localParticipant.permissions || room.localParticipant.permissions.canPublish !== false, [room, permissionVer]);
   const localCanPublishData = useMemo(() => !room || !room.localParticipant.permissions || room.localParticipant.permissions.canPublishData !== false, [room, permissionVer]);
+  const micOn = !!room?.localParticipant.isMicrophoneEnabled;
+  const camOn = !!room?.localParticipant.isCameraEnabled;
+
+  useEffect(() => {
+    if (lastError?.message) message.error(lastError.message);
+  }, [lastError, message]);
+
+  useEffect(() => {
+    if (phase !== "room" || connState !== "disconnected") return;
+    // LiveKit can end a session without the user clicking “Sair”. Return to
+    // the login screen so a stale room view cannot keep accepting actions.
+    setPhase("join");
+    setCurrentRoom("");
+    setSessionKey("");
+    setIsHost(false);
+    setRoomRole("participant");
+    setRoomLocked(false);
+    setPresenter(null);
+    setHostIdentity("");
+    setChatMessages([]);
+    setSelected(null);
+  }, [phase, connState]);
 
   // Per-person camera/microphone controls are real subscriptions, not just CSS.
   // Screen-share video/audio are intentionally never affected by these toggles.
@@ -120,7 +157,7 @@ export default function App() {
     if (!room) return;
     room.remoteParticipants.forEach((participant) => {
       const name = getParticipantName(participant);
-      const person = getPersonSettings(peopleSettings, name);
+      const person = getPersonSettings(peopleSettings, participant.identity, name);
       participant.trackPublications.forEach((pub) => {
         if (!pub.setSubscribed) return;
         let wanted = null;
@@ -132,11 +169,11 @@ export default function App() {
     });
   }, [room, trackVer, peopleSettings]);
 
-  const updatePersonSetting = useCallback((name, patch) => {
-    if (!name) return;
+  const updatePersonSetting = useCallback((identity, patch) => {
+    if (!identity) return;
     setPeopleSettings((previous) => ({
       ...previous,
-      [name]: { ...getPersonSettings(previous, name), ...patch }
+      [identity]: { ...getPersonSettings(previous, identity), ...patch }
     }));
   }, []);
 
@@ -193,12 +230,18 @@ export default function App() {
   }, [totalScreenCount > 0]);
 
   const updateMeta = useCallback(async (patch) => {
-    if (!room) return;
+    if (!room) return false;
     const next = { ...readState(room.localParticipant), ...patch };
-    try { await room.localParticipant.setMetadata(buildState(next)); } catch (e) {}
+    try {
+      await room.localParticipant.setMetadata(buildState(next));
+      return true;
+    } catch (error) {
+      console.error("Failed to update participant metadata:", error);
+      return false;
+    }
   }, [room]);
 
-  const { shareScreen, stopBroadcast, stopAll, pauseLive, resumeLive } = useScreenShare(room, settings, updateMeta);
+  const { sharing, shareScreen, stopBroadcast, stopAll, pauseLive, resumeLive } = useScreenShare(room, settings, updateMeta, message);
 
   useEffect(() => {
     if (!room) return;
@@ -216,24 +259,36 @@ export default function App() {
 
   // ---- Ephemeral interaction layer ---------------------------------------
   const [interactions, setInteractions] = useState([]);
-  const [interactionTool, setInteractionTool] = useState(null); // cursor | point | draw | reaction | eraser
+  const [interactionTool, setInteractionTool] = useState(null); // cursor | point | draw | reaction
   const [markerStyle, setMarkerStyle] = useState("ring");
   const [pendingReaction, setPendingReaction] = useState(null);
-  const [brush, setBrush] = useState({ color: DRAW_COLORS[0], width: DRAW_WIDTHS[1] });
+  const [brush, setBrush] = useState({ color: DRAW_COLORS[0], width: DRAW_WIDTHS[1], tool: "pen" });
   const [boardOpen, setBoardOpen] = useState(false);
   const [boardStrokes, setBoardStrokes] = useState([]);
   const [attentionRequest, setAttentionRequest] = useState(null);
   const boardRef = useRef(boardStrokes);
+  const boardHistoryRef = useRef({ undo: [], redo: [] });
+  const [boardHistoryState, setBoardHistoryState] = useState({ canUndo: false, canRedo: false });
+  const interactionTimersRef = useRef(new Map());
   const cursorTimersRef = useRef(new Map());
+  const inboundDataBudgetRef = useRef(new Map());
 
   useEffect(() => { boardRef.current = boardStrokes; }, [boardStrokes]);
+
+  const updateBoardHistoryState = useCallback(() => {
+    const history = boardHistoryRef.current;
+    setBoardHistoryState({ canUndo: history.undo.length > 0, canRedo: history.redo.length > 0 });
+  }, []);
 
   const addInteraction = useCallback((item) => {
     setInteractions((list) => list.filter((current) => current.id !== item.id).concat(item).slice(-80));
     const lifetime = INTERACTION_LIFETIME[item.type] || 4000;
-    window.setTimeout(() => {
+    const timers = interactionTimersRef.current;
+    if (timers.has(item.id)) window.clearTimeout(timers.get(item.id));
+    timers.set(item.id, window.setTimeout(() => {
+      timers.delete(item.id);
       setInteractions((list) => list.filter((current) => current.id !== item.id));
-    }, lifetime);
+    }, lifetime));
   }, []);
 
   const upsertCursor = useCallback((item) => {
@@ -247,14 +302,17 @@ export default function App() {
   }, []);
 
   useEffect(() => () => {
+    interactionTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+    interactionTimersRef.current.clear();
     cursorTimersRef.current.forEach((timer) => window.clearTimeout(timer));
     cursorTimersRef.current.clear();
+    inboundDataBudgetRef.current.clear();
   }, []);
 
   const sendData = useCallback((data, reliable = false) => {
     if (!room || !localCanPublishData) return;
     try {
-      void room.localParticipant.publishData(encodeInteraction(data), { reliable, topic: INTERACTION_TOPIC }).catch(() => {});
+      void room.localParticipant.publishData(encodeInteractionForTransport(data), { reliable, topic: INTERACTION_TOPIC }).catch(() => {});
     } catch (e) {}
   }, [room, localCanPublishData]);
 
@@ -273,20 +331,23 @@ export default function App() {
     sendData({ type: "cursor", tile, x: point.x, y: point.y }, false);
   }, [sendData]);
 
-  const sendStroke = useCallback((tile, points, color, width) => {
+  const sendStroke = useCallback((tile, points, color, width, tool = "pen", opacity) => {
     if (!tile) return;
-    const safePoints = sanitizePoints(points);
-    if (safePoints.length < 2) return;
+    const drawing = sanitizeDrawAction({ points, color, width, tool, opacity });
+    if (drawing.points.length < 2) return;
     const item = {
-      type: "stroke", id: newInteractionId(), tile, points: safePoints,
-      color: sanitizeColor(color), width: sanitizeWidth(width), author: "você"
+      type: "stroke", tile, ...drawing, id: newInteractionId(), author: "você"
     };
     addInteraction(item);
-    sendData({ type: "stroke", t: "risco", id: item.id, tile, points: item.points, pts: item.points, color: item.color, cor: item.color, width: item.width, espessura: item.width });
+    sendData({
+      type: "stroke", t: "risco", id: item.id, tile,
+      points: item.points, pts: item.points, color: item.color, cor: item.color,
+      width: item.width, espessura: item.width, tool: item.tool, opacity: item.opacity
+    });
   }, [addInteraction, sendData]);
 
   const sendReaction = useCallback((tile, reaction, point) => {
-    if (!tile || !point) return;
+    if (!tile || !point || !REACTION_EMOJIS[reaction]) return;
     const extra = {
       x: Math.max(0, Math.min(1, point.x)),
       y: Math.max(0, Math.min(1, point.y)),
@@ -298,35 +359,55 @@ export default function App() {
     addInteraction(item);
     sendData({ type: "reaction", t: "reacao", id: item.id, tile, reaction, k: REACTION_TO_WIRE[reaction], ...extra, vel: extra.speed, tam: extra.size, deriva: extra.drift });
     setPendingReaction(null);
-    setInteractionTool(null);
   }, [addInteraction, sendData]);
 
-  const addBoardStroke = useCallback((points, color, width) => {
-    const safePoints = sanitizePoints(points);
-    if (safePoints.length < 2) return;
+  const addBoardStroke = useCallback((points, color, width, tool = "pen", opacity) => {
+    const drawing = sanitizeDrawAction({ points, color, width, tool, opacity });
+    if (drawing.points.length < 2) return;
     const stroke = {
-      id: newInteractionId(), points: safePoints,
-      color: sanitizeColor(color), width: sanitizeWidth(width)
+      ...drawing, id: newInteractionId()
     };
     setBoardStrokes((list) => list.concat(stroke).slice(-400));
-    sendData({ type: "board-stroke", t: "q-risco", ...stroke, pts: stroke.points, cor: stroke.color, espessura: stroke.width }, true);
-  }, [sendData]);
+    boardHistoryRef.current.undo.push(stroke);
+    boardHistoryRef.current.undo = boardHistoryRef.current.undo.slice(-400);
+    boardHistoryRef.current.redo = [];
+    updateBoardHistoryState();
+    sendData({
+      type: "board-stroke", t: "q-risco", ...stroke,
+      pts: stroke.points, cor: stroke.color, espessura: stroke.width
+    }, true);
+  }, [sendData, updateBoardHistoryState]);
 
-  const eraseBoard = useCallback((point) => {
-    setBoardStrokes((list) => {
-      const ids = list.filter((stroke) => stroke.points.some(([x, y]) =>
-        Math.abs(x - point[0]) < 0.025 && Math.abs(y - point[1]) < 0.025
-      )).map((stroke) => stroke.id).slice(0, 40);
-      if (!ids.length) return list;
-      sendData({ type: "board-erase", t: "q-apagar", ids }, true);
-      return list.filter((stroke) => !ids.includes(stroke.id));
-    });
-  }, [sendData]);
+  const undoBoard = useCallback(() => {
+    const history = boardHistoryRef.current;
+    const stroke = history.undo.pop();
+    if (!stroke) return;
+    history.redo.push(stroke);
+    setBoardStrokes((list) => list.filter((item) => item.id !== stroke.id));
+    sendData({ type: "board-erase", t: "q-apagar", ids: [stroke.id] }, true);
+    updateBoardHistoryState();
+  }, [sendData, updateBoardHistoryState]);
+
+  const redoBoard = useCallback(() => {
+    const history = boardHistoryRef.current;
+    const stroke = history.redo.pop();
+    if (!stroke) return;
+    history.undo.push(stroke);
+    history.undo = history.undo.slice(-400);
+    setBoardStrokes((list) => list.some((item) => item.id === stroke.id) ? list : list.concat(stroke).slice(-400));
+    sendData({
+      type: "board-stroke", t: "q-risco", ...stroke,
+      pts: stroke.points, cor: stroke.color, espessura: stroke.width
+    }, true);
+    updateBoardHistoryState();
+  }, [sendData, updateBoardHistoryState]);
 
   const clearBoard = useCallback(() => {
     setBoardStrokes([]);
+    boardHistoryRef.current = { undo: [], redo: [] };
+    updateBoardHistoryState();
     sendData({ type: "board-clear", t: "q-limpar" }, true);
-  }, [sendData]);
+  }, [sendData, updateBoardHistoryState]);
 
   const sendBoardSnapshot = useCallback(() => {
     const snapshot = (boardRef.current || []).slice(-400);
@@ -356,23 +437,31 @@ export default function App() {
     function onData(payload, participant, _kind, topic) {
       if (topic !== INTERACTION_TOPIC || !settings.interactionsEnabled) return;
       const author = participant ? (participant.name || participant.identity) : "alguém";
-      if (getPersonSettings(peopleSettings, author).interactionsHidden) return;
+      if (getPersonSettings(peopleSettings, participant?.identity, author).interactionsHidden) return;
       const data = decodeInteraction(payload);
       if (!data) return;
       const type = data.type || LEGACY_TYPE_MAP[data.t];
       if (!type) return;
+
+      // Data packets are intentionally lightweight, but a participant can
+      // still flood a browser with valid packets. Keep cursors responsive while
+      // bounding the work done per sender for strokes and control messages.
+      const sender = participant?.identity || "unknown";
+      const second = Math.floor(Date.now() / 1000);
+      const budget = inboundDataBudgetRef.current.get(sender);
+      const currentBudget = budget && budget.second === second ? budget : { second, count: 0 };
+      const limit = type === "cursor" ? 90 : (type === "stroke" ? 45 : 120);
+      if (currentBudget.count >= limit) return;
+      currentBudget.count += 1;
+      inboundDataBudgetRef.current.set(sender, currentBudget);
 
       if (type === "board-request") {
         sendBoardSnapshot();
         return;
       }
       if (type === "board-sync" && Array.isArray(data.strokes)) {
-        const incoming = data.strokes.slice(0, 12).map((stroke) => ({
-          id: String(stroke.id || newInteractionId()).slice(0, 80),
-          points: sanitizePoints(stroke.points),
-          color: sanitizeColor(stroke.color),
-          width: sanitizeWidth(stroke.width)
-        })).filter((stroke) => stroke.points.length > 1);
+        const incoming = data.strokes.slice(0, 12).map(sanitizeDrawAction)
+          .filter((stroke) => stroke.points.length > 1);
         setBoardStrokes((list) => {
           const known = new Set(list.map((stroke) => stroke.id));
           return list.concat(incoming.filter((stroke) => !known.has(stroke.id))).slice(-400);
@@ -380,12 +469,8 @@ export default function App() {
         return;
       }
       if (type === "board-stroke") {
-        const points = sanitizePoints(data.points || data.pts);
-        if (points.length < 2) return;
-        const stroke = {
-          id: String(data.id || newInteractionId()).slice(0, 80), points,
-          color: sanitizeColor(data.color || data.cor), width: sanitizeWidth(data.width || data.espessura)
-        };
+        const stroke = sanitizeDrawAction(data);
+        if (stroke.points.length < 2) return;
         setBoardStrokes((list) => list.some((current) => current.id === stroke.id)
           ? list : list.concat(stroke).slice(-400));
         return;
@@ -393,10 +478,15 @@ export default function App() {
       if (type === "board-erase" && Array.isArray(data.ids)) {
         const ids = data.ids.slice(0, 40).map(String);
         setBoardStrokes((list) => list.filter((stroke) => !ids.includes(stroke.id)));
+        boardHistoryRef.current.undo = boardHistoryRef.current.undo.filter((stroke) => !ids.includes(stroke.id));
+        boardHistoryRef.current.redo = boardHistoryRef.current.redo.filter((stroke) => !ids.includes(stroke.id));
+        updateBoardHistoryState();
         return;
       }
       if (type === "board-clear") {
         setBoardStrokes([]);
+        boardHistoryRef.current = { undo: [], redo: [] };
+        updateBoardHistoryState();
         return;
       }
       if (type === "look" && data.tile) {
@@ -422,14 +512,14 @@ export default function App() {
           x: Math.max(0, Math.min(1, data.x)), y: Math.max(0, Math.min(1, data.y)), author
         });
       } else if (type === "stroke") {
-        const points = sanitizePoints(data.points || data.pts);
-        if (points.length > 1) addInteraction({
-          type: "stroke", id: String(data.id || newInteractionId()), tile, points,
-          color: sanitizeColor(data.color || data.cor), width: sanitizeWidth(data.width || data.espessura), author
+        const drawing = sanitizeDrawAction(data);
+        if (drawing.points.length > 1) addInteraction({
+          type: "stroke", tile, ...drawing, author
         });
       } else if (type === "reaction") {
-        const reaction = data.reaction || REACTION_FROM_WIRE[data.k];
-        if (!["heart", "flame", "bolt", "star"].includes(reaction)) return;
+        const rawReaction = data.reaction || data.k;
+        const reaction = REACTION_EMOJIS[rawReaction] ? rawReaction : REACTION_FROM_WIRE[rawReaction];
+        if (!REACTION_EMOJIS[reaction]) return;
         addInteraction({
           type: "reaction", id: String(data.id || newInteractionId()), tile,
           reaction,
@@ -447,7 +537,7 @@ export default function App() {
     // Ask existing participants for the current board after our listener exists.
     sendData({ type: "board-request", requester: myName }, true);
     return () => { room.off(RoomEvent.DataReceived, onData); };
-  }, [room, settings.interactionsEnabled, peopleSettings, addInteraction, upsertCursor, sendData, sendBoardSnapshot, myName]);
+  }, [room, settings.interactionsEnabled, peopleSettings, addInteraction, upsertCursor, sendData, sendBoardSnapshot, myName, updateBoardHistoryState]);
 
   // ---- Room features: chat, temporary files, host controls and presenter ---
   const addChatMessage = useCallback((item) => {
@@ -518,11 +608,11 @@ export default function App() {
 
   const roomControl = useCallback(async (payload) => {
     if (!sessionKey) throw new Error("Sua sessão de controle expirou.");
-    const response = await fetch("/api/room-control", {
+    const response = await fetchWithTimeout("/api/room-control", {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Maze-Session": sessionKey },
       body: JSON.stringify(payload)
-    });
+    }, 12000);
     let data = {};
     try { data = await response.json(); } catch (e) {}
     if (!response.ok) throw new Error(data.motivo || "Não consegui aplicar a mudança.");
@@ -550,7 +640,7 @@ export default function App() {
     if (!localCanPublishData) { message.warning("O host desativou suas interações nesta sala."); return false; }
     if (file.size > 8 * 1024 * 1024) { message.warning("O arquivo passa do limite de 8 MB."); return false; }
     const url = "/api/share?name=" + encodeURIComponent(file.name || "arquivo") + "&type=" + encodeURIComponent(file.type || "application/octet-stream");
-    const response = await fetch(url, { method: "POST", headers: { "X-Maze-Session": sessionKey }, body: file });
+    const response = await fetchWithTimeout(url, { method: "POST", headers: { "X-Maze-Session": sessionKey }, body: file }, 30000);
     let data = {};
     try { data = await response.json(); } catch (e) {}
     if (!response.ok) { message.error(data.motivo || "Não consegui enviar o arquivo."); return false; }
@@ -611,9 +701,26 @@ export default function App() {
   const kickParticipant = useCallback(async (identity) => {
     try {
       await roomControl({ action: "kick", identity });
-      message.success("Pessoa removida da sala.");
+      message.success("Pessoa removida desta sessão. Ela poderá entrar novamente.");
       return true;
     } catch (e) { message.error(e.message); return false; }
+  }, [roomControl, message]);
+
+  const voteKickParticipant = useCallback(async (identity) => {
+    try {
+      const data = await roomControl({ action: "vote-kick", identity });
+      if (data.kicked) {
+        message.success((data.targetName || "Pessoa") + " foi removida pela votação e poderá entrar novamente.");
+      } else if (data.duplicate) {
+        message.info("Seu voto já estava registrado · " + data.votes + "/" + data.required);
+      } else {
+        message.success("Voto registrado · " + data.votes + "/" + data.required);
+      }
+      return data;
+    } catch (e) {
+      message.error(e.message);
+      return false;
+    }
   }, [roomControl, message]);
 
   useEffect(() => {
@@ -633,20 +740,41 @@ export default function App() {
     return exact || tiles.find((tile) => tile.isScreen) || tiles[0] || null;
   }, [tiles, selected]);
   const clipTarget = selectedTile && selectedTile.isScreen ? selectedTile : tiles.find((tile) => tile.isScreen) || null;
-  const clipBuffer = useClipBuffer(room, clipTarget, 45);
-  const saveClip = useCallback((seconds) => {
+  const [clipBufferTarget, setClipBufferTarget] = useState("");
+  const clipEnabled = !!clipTarget && clipBufferTarget === clipTarget.key;
+  const clipBuffer = useClipBuffer(room, clipTarget, 45, clipEnabled);
+  const toggleClipBuffer = useCallback(() => {
+    if (!clipTarget) return;
+    setClipBufferTarget((current) => current === clipTarget.key ? "" : clipTarget.key);
+  }, [clipTarget]);
+  const saveClip = useCallback(async (seconds) => {
     if (!clipBuffer.supported) { message.warning("Seu navegador não suporta clipes locais."); return; }
-    if (!clipBuffer.saveClip(seconds)) { message.info("O buffer ainda não tem tempo suficiente para salvar o clipe."); return; }
-    message.success("Clipe salvo no seu dispositivo.");
+    message.open({ key: "maze-clip", type: "loading", content: "Montando um WebM válido…", duration: 0 });
+    try {
+      if (!await clipBuffer.saveClip(seconds)) {
+        message.open({ key: "maze-clip", type: "info", content: "O buffer ainda não tem tempo suficiente para esse clipe." });
+        return;
+      }
+      message.open({ key: "maze-clip", type: "success", content: "Clipe salvo no seu dispositivo." });
+    } catch (error) {
+      message.open({ key: "maze-clip", type: "error", content: error?.message || "Não consegui montar o clipe." });
+    }
   }, [clipBuffer, message]);
 
   const join = useCallback(async (name, roomName, options = {}) => {
+    if (joiningRef.current) return;
+    joiningRef.current = true;
     setJoining(true);
+    let connected = false;
     try {
+      const canonicalRoom = normalizeRoomName(roomName);
       let hostClaim = "";
-      try { hostClaim = localStorage.getItem("mazeHostClaim:" + roomName) || ""; } catch (e) {}
+      try {
+        hostClaim = localStorage.getItem("mazeHostClaim:" + canonicalRoom)
+          || localStorage.getItem("mazeHostClaim:" + roomName) || "";
+      } catch (e) {}
       const params = new URLSearchParams({
-        room: roomName,
+        room: canonicalRoom,
         name,
         role: options.spectator ? "spectator" : "participant",
         preset: options.preset || "livre"
@@ -654,7 +782,7 @@ export default function App() {
       const tokenHeaders = {};
       if (options.pin) tokenHeaders["X-Maze-Pin"] = String(options.pin).slice(0, 24);
       if (hostClaim) tokenHeaders["X-Maze-Host-Claim"] = hostClaim;
-      const resp = await fetch("/token?" + params.toString(), { headers: tokenHeaders });
+      const resp = await fetchWithTimeout("/token?" + params.toString(), { headers: tokenHeaders }, 10000);
       if (!resp.ok) {
         let reason = "Não consegui entrar agora.";
         try { const body = await resp.json(); if (body && body.motivo) reason = body.motivo; } catch (e) {}
@@ -664,14 +792,15 @@ export default function App() {
       const url = data.url || window.LIVEKIT_URL;
       if (!url) throw new Error("URL do servidor não configurada");
       await connect(url, data.token);
-      localStorage.setItem("meuNome", name);
+      connected = true;
+      try { localStorage.setItem("meuNome", name); } catch (e) {}
       if (data.hostClaim) {
-        try { localStorage.setItem("mazeHostClaim:" + roomName, data.hostClaim); } catch (e) {}
+        try { localStorage.setItem("mazeHostClaim:" + (data.room || canonicalRoom), data.hostClaim); } catch (e) {}
       }
       setSessionKey(data.session || "");
       setIsHost(!!data.isHost);
       setRoomRole(data.role || (options.spectator ? "spectator" : "participant"));
-      setCurrentRoom(roomName);
+      setCurrentRoom(data.room || canonicalRoom);
       const state = data.roomState || {};
       setRoomPreset(ROOM_PRESETS[state.preset] ? state.preset : "livre");
       setRoomLocked(!!state.locked);
@@ -681,13 +810,20 @@ export default function App() {
       setPhase("room");
       if (data.isHost) message.success("Você é o host desta sala.");
     } catch (e) {
-      message.error(e && e.message ? e.message : String(e));
+      if (connected) await disconnect();
+      const reason = e?.name === "AbortError"
+        ? "O servidor demorou demais para responder. Tente novamente."
+        : (e && e.message ? e.message : String(e));
+      message.error(reason);
     } finally {
+      joiningRef.current = false;
       setJoining(false);
     }
-  }, [connect, message]);
+  }, [connect, disconnect, message]);
 
-  const setLiveTitle = useCallback((title) => { updateMeta({ titulo: title }); }, [updateMeta]);
+  const setLiveTitle = useCallback(async (title) => {
+    if (!await updateMeta({ titulo: title })) message.error("Não consegui atualizar o título da transmissão.");
+  }, [updateMeta, message]);
 
   const copyLink = useCallback(async () => {
     const link = window.location.origin + "/?sala=" + encodeURIComponent(currentRoom || "geral");
@@ -698,27 +834,31 @@ export default function App() {
   const toggleMic = useCallback(async () => {
     if (!room) return;
     if (!localCanPublish) { message.warning("O host deixou você no modo espectador."); return; }
-    const next = !room.localParticipant.isMicrophoneEnabled;
-    await room.localParticipant.setMicrophoneEnabled(next);
-    setMicOn(next);
+    try {
+      await room.localParticipant.setMicrophoneEnabled(!room.localParticipant.isMicrophoneEnabled);
+    } catch (error) {
+      message.error(error?.message || "Não consegui alterar o microfone.");
+    }
   }, [room, localCanPublish, message]);
 
   const toggleCam = useCallback(async () => {
     if (!room) return;
     if (!localCanPublish) { message.warning("O host deixou você no modo espectador."); return; }
-    const next = !room.localParticipant.isCameraEnabled;
-    await room.localParticipant.setCameraEnabled(next);
-    setCamOn(next);
+    try {
+      await room.localParticipant.setCameraEnabled(!room.localParticipant.isCameraEnabled);
+    } catch (error) {
+      message.error(error?.message || "Não consegui alterar a câmera.");
+    }
   }, [room, localCanPublish, message]);
 
-  const leave = useCallback(() => {
-    disconnect();
+  const leave = useCallback(async () => {
+    await disconnect();
     window.location.reload();
   }, [disconnect]);
 
   const onShare = useCallback(() => {
     if (!localCanPublish) { message.warning("O host deixou você no modo espectador."); return; }
-    shareScreen(message);
+    shareScreen();
   }, [shareScreen, message, localCanPublish]);
 
   if (phase === "join") {
@@ -726,7 +866,8 @@ export default function App() {
   }
 
   return (
-    <RoomView
+    <Suspense fallback={<div className="room-loading" role="status">Abrindo a sala…</div>}>
+      <RoomView
       tiles={tiles}
       audios={audios}
       people={people}
@@ -757,10 +898,15 @@ export default function App() {
       onSetPresenter={setPresenterTarget}
       onSetParticipantPermission={setParticipantPermission}
       onKickParticipant={kickParticipant}
+      onVoteKickParticipant={voteKickParticipant}
       clipSupported={clipBuffer.supported}
       clipBuffering={clipBuffer.buffering}
+      clipExporting={clipBuffer.exporting}
+      clipError={clipBuffer.error}
       clipReadySeconds={clipBuffer.readySeconds}
       clipTargetName={clipTarget ? clipTarget.name : ""}
+      clipEnabled={clipEnabled}
+      onToggleClipBuffer={toggleClipBuffer}
       onSaveClip={saveClip}
       micOn={micOn}
       camOn={camOn}
@@ -785,12 +931,16 @@ export default function App() {
       setBoardOpen={setBoardOpen}
       boardStrokes={boardStrokes}
       onBoardStroke={addBoardStroke}
-      onBoardErase={eraseBoard}
+      onBoardUndo={undoBoard}
+      onBoardRedo={redoBoard}
+      boardCanUndo={boardHistoryState.canUndo}
+      boardCanRedo={boardHistoryState.canRedo}
       onBoardClear={clearBoard}
       attentionRequest={attentionRequest}
       setAttentionRequest={setAttentionRequest}
       onCallAttention={callAttention}
       onShare={onShare}
+      sharing={sharing}
       onStopBroadcast={stopBroadcast}
       onStopAll={stopAll}
       onPauseLive={pauseLive}
@@ -799,7 +949,8 @@ export default function App() {
       onCopyLink={copyLink}
       onToggleMic={toggleMic}
       onToggleCam={toggleCam}
-      onLeave={leave}
-    />
+        onLeave={leave}
+      />
+    </Suspense>
   );
 }

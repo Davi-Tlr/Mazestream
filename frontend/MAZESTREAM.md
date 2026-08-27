@@ -1,5 +1,10 @@
 # Mazestream (frontend React)
 
+> Nota historica: os comandos e a estrutura abaixo antecedem o workspace e os
+> pacotes pre-compilados. Para instalar, atualizar ou desenvolver, use o
+> [README atual](../README.md), o [guia de desenvolvimento](../docs/DEVELOPMENT.md)
+> e o [guia de implantacao](../docs/DEPLOYMENT.md). Eles sao a referencia atual.
+
 Substitui o frontend antigo. Mesmo contrato: porta 3000, `/token`, mesmas variaveis
 de ambiente. Agora tem build (Vite) que roda dentro do Docker.
 
@@ -13,25 +18,31 @@ de ambiente. Agora tem build (Vite) que roda dentro do Docker.
 - **windowAudio** (isola audio da aplicacao, Chromium/Windows 2026) + aviso quando a
   captura vem sem audio.
 - **Limite de salas simultaneas** no servidor + **modal de termos** na entrada.
+- **Entrada resiliente**: timeouts de token/negociacao, retorno ao login quando a
+  conexao cai e tela da sala carregada sob demanda.
+- **Desenho local** com borracha proporcional ao pincel; preferencias por identidade
+  do LiveKit, com fallback para o formato antigo salvo por nome.
 
 ## Deploy
 
-O contrato nao mudou, entao e drop-in. Troque o conteudo da pasta `frontend/` por
-estes arquivos e rebuilde:
+O contrato nao mudou, entao e drop-in. O build Docker usa o perfil `host-a1` e o
+overlay limita os recursos na VM compartilhada:
 
 ```bash
 cd ~/livekit-oracle
-sudo docker compose up -d --build frontend
+sudo docker compose -f docker-compose.yaml -f docker-compose.host-a1.yaml \
+  --profile web up -d --build frontend
 ```
 
-O `Dockerfile` faz `npm install` + `vite build` dentro do container (1 a 2 min na
+O `Dockerfile` faz `npm ci` + `vite build` dentro do container (1 a 2 min na
 primeira vez). Depois, hard refresh no navegador (Ctrl+Shift+R).
 
-## Limite de salas (importante)
+## Limites de salas e pessoas (importante)
 
-O servidor recusa criar uma sala nova quando ja existem `MAX_ROOMS` (padrao 5). Ele
-pergunta ao LiveKit quantas salas ha antes de liberar. Adicione a variavel no
-servico `frontend` do seu `docker-compose.yaml`:
+O servidor recusa criar uma sala nova quando ja existem `MAX_ROOMS` (padrao A1: 2). Ele
+pergunta ao LiveKit quantas salas ha antes de liberar. Salas novas sao criadas
+explicitamente via `CreateRoom` com `max_participants`, entao o proprio SFU aplica
+o teto mesmo se varias pessoas tentarem entrar ao mesmo tempo. O padrao A1 e 10:
 
 ```yaml
   frontend:
@@ -39,32 +50,16 @@ servico `frontend` do seu `docker-compose.yaml`:
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:-}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-}
       - PUBLIC_WSS_URL=${PUBLIC_WSS_URL:-}
-      - MAX_ROOMS=5
-      # Opcional. Padrao: deriva do PUBLIC_WSS_URL (wss -> https), que passa pelo
-      # seu Nginx em /twirp. So defina se quiser apontar direto pro LiveKit.
-      # - LIVEKIT_API_URL=http://SEU_HOST:7880
+      - MAX_ROOMS=2
+      - MAX_PARTICIPANTS_PER_ROOM=10
+      # O compose aponta direto para o LiveKit no host, sem hairpin pelo dominio.
+      - LIVEKIT_API_URL=http://host.docker.internal:7880
 ```
 
-Como funciona a checagem: o servidor chama a API do LiveKit (`ListRooms`) usando a
-URL derivada do `PUBLIC_WSS_URL`. Pra isso funcionar, o seu Nginx precisa fazer
-proxy de `/twirp` pro LiveKit (o `deploy.sh` ja configura isso). Se a checagem
-falhar por qualquer motivo, o servidor **deixa entrar** (falha aberta), pra um
-erro de rede nunca travar todo mundo. Ou seja: no pior caso o limite nao e
-aplicado, mas o app nunca quebra por causa dele.
-
-## Limite por sala (no livekit.yaml)
-
-Pra travar o tamanho de cada sala e fechar salas vazias (que senao ocupam o teto de
-salas), adicione no seu `livekit.yaml`:
-
-```yaml
-room:
-  max_participants: 12      # teto de gente por sala
-  empty_timeout: 300        # fecha sala vazia depois de 5 min
-  departure_timeout: 20
-```
-
-Depois: `sudo docker compose restart livekit`.
+Como funciona a checagem: o servidor chama `ListRooms` e `CreateRoom` pela API do
+LiveKit usando `LIVEKIT_API_URL`. O compose usa `host.docker.internal` para falar
+direto com a porta 7880 do host. Se a API nao responder, a emissao de token falha de forma segura com
+503; o app nao distribui tokens sem conseguir confirmar os limites.
 
 ## Seguranca (contra flood / DoS / injection)
 
@@ -98,8 +93,8 @@ Ajuste `TOKENS_POR_SEG` no compose se precisar:
 ```yaml
   frontend:
     environment:
-      - MAX_ROOMS=5
-      - TOKENS_POR_SEG=40
+      - MAX_ROOMS=2
+      - TOKENS_POR_SEG=20
 ```
 
 Se o seu amigo dev for testar (stress/flood), o esperado e: `/token` responde 429
@@ -113,21 +108,52 @@ saida cresce com o numero de gente assistindo. Os limites acima seguram isso.
 
 Como o servidor e o mesmo do RPG, vale ter aviso quando o consumo sobe.
 
-### 1. Vigia no servidor (estimado, avisa no Discord)
+### 1. Relay do Discord (medido, automatico e com `/banda`)
 
-O `server.cjs` consulta o LiveKit a cada 30s, estima os Mbps de saida
-(publicadores x espectadores x bitrate) e, se passar do teto, manda um aviso no
-seu Discord. So liga se voce definir o webhook. No servico `frontend` do compose:
+O `discord-relay` consulta a cada 30s os contadores Prometheus de bytes do LiveKit
+na porta local 6789. A taxa total e o acumulado sao medidos do trafego real do SFU.
+Ele tambem conta as faixas de tela, camera e audio para montar uma divisao estimada
+por sala. Acima de `ALERTA_MBPS` (padrao A1: 120) envia um embed automatico ao webhook
+e tambem avisa quando a banda volta ao normal.
 
-```yaml
-  frontend:
-    environment:
-      - ALERTA_WEBHOOK=https://discord.com/api/webhooks/SEU_WEBHOOK
-      - ALERTA_MBPS=250        # avisa acima disso (padrao 250)
-      - BITRATE_MBPS=6         # bitrate por stream pra estimativa (padrao 6)
+O comando `/banda` mostra:
+
+- Mbps de entrada e saida agora;
+- ritmo estimado por hora;
+- salas, pessoas, telas, cameras e faixas;
+- bytes reais enviados desde que o relay iniciou.
+
+Webhook sozinho e suficiente para os alertas. Slash command exige um Discord App,
+porque webhooks de entrada nao recebem comandos. Rode o deploy com:
+
+```bash
+sudo ./deploy.sh --domain live.seudominio.com \
+  --with-frontend --use-caddy \
+  --discord-webhook 'URL_DO_WEBHOOK' \
+  --discord-app-id 'APPLICATION_ID' \
+  --discord-public-key 'PUBLIC_KEY' \
+  --discord-bot-token 'BOT_TOKEN' \
+  --discord-guild-id 'GUILD_ID' \
+  --alerta-mbps 120
 ```
 
-E uma **estimativa** (nao mede bytes reais), boa como heads-up rapido.
+`--discord-guild-id` e opcional, mas faz o comando aparecer imediatamente na
+guild de teste. Sem ele, o comando e global. No Discord Developer Portal, defina
+o **Interactions Endpoint URL** como:
+
+```text
+https://seu-dominio/discord/interactions
+```
+
+Instale o app na guild com o escopo `applications.commands`. O relay valida todas
+as interacoes com a assinatura Ed25519 do Discord. As credenciais ficam apenas no
+`.env` do servidor (permissao 600) e nao entram na imagem nem no Git.
+
+O total e real para os pacotes processados pelo LiveKit. A divisao por sala ainda
+e uma **estimativa**, porque Adaptive Stream, Dynacast e assinaturas desativadas
+mudam quais camadas cada espectador recebe.
+
+A porta 6789 e apenas para o relay local; nao a abra na Security List da Oracle.
 
 ### 2. Alarme da Oracle (real, autoritativo)
 
@@ -212,7 +238,11 @@ O Vite proxya `/token` pro dev-server automaticamente. Abra `http://localhost:51
 | `npm run dev` | Só o Vite (sem token server, nao conecta no LiveKit) |
 | `npm run dev:token` | Só o token server |
 | `npm run dev:full` | Vite + token server juntos |
-| `npm run build` | Build de producao em `dist/` |
+| `npm run dev:local` | UI com a politica local de 5 Mbps |
+| `npm run dev:host` | UI com a politica hospedada de 4 Mbps |
+| `npm run build:local` | Build local reproduzivel em `dist/` |
+| `npm run build:host` | Build do Oracle A1 em `dist/` |
+| `npm run build` | Build de producao; fora do Vite dev usa `host-a1` |
 
 ### Variaveis de ambiente (todas opcionais em dev)
 

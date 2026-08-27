@@ -9,7 +9,8 @@ import {
   ClearOutlined, BorderOutlined, NotificationOutlined, DeleteOutlined,
   EyeOutlined, EyeInvisibleOutlined, MessageOutlined, DownOutlined, UpOutlined,
   CommentOutlined, UploadOutlined, CrownOutlined, PushpinOutlined, ScissorOutlined,
-  LockOutlined, UnlockOutlined, UserDeleteOutlined, DragOutlined, ArrowRightOutlined
+  LockOutlined, UnlockOutlined, UserDeleteOutlined, DragOutlined, ArrowRightOutlined,
+  UndoOutlined, RedoOutlined, EllipsisOutlined
 } from "@ant-design/icons";
 import VideoTile from "./VideoTile.jsx";
 import AudioSink from "./AudioSink.jsx";
@@ -18,9 +19,9 @@ import { Sun, Moon, REACTIONS } from "./icons.jsx";
 import { useTheme } from "../theme.jsx";
 import { fmtDuration } from "../state.js";
 import { volumeKey, getPersonSettings } from "../collect.js";
-import { DRAW_COLORS, DRAW_WIDTHS, MARKER_STYLES } from "../interactions.js";
+import { DRAW_COLORS, DRAW_WIDTHS, DRAW_TOOLS, DRAW_TOOL_LABELS, MARKER_STYLES } from "../interactions.js";
 import { ROOM_PRESETS, PRESET_OPTIONS } from "../roomFeatures.js";
-import { SEND_OPTIONS, RECEIVE_OPTIONS, MAX_SCREENS, QUALITY_LABELS } from "../constants.js";
+import { CONTENT_OPTIONS, SEND_OPTIONS, RECEIVE_OPTIONS, MAX_SCREENS, QUALITY_LABELS } from "../constants.js";
 
 const STATUS_MAP = {
   idle: ["Conectando", "reconnecting"], connecting: ["Conectando", "reconnecting"],
@@ -59,8 +60,48 @@ const LiveTimer = memo(function LiveTimer({ desde, estado }) {
   return <span className="live-pill live"><span className="pulse" /> AO VIVO · {fmtDuration(now - desde)}</span>;
 });
 
-const MemoTile = memo(function MemoTile(props) {
-  return <VideoTile {...props} />;
+const EMPTY_INTERACTIONS = Object.freeze([]);
+
+// Keep per-tile callbacks inside the memoized adapter. RoomView also renders
+// the cursor/interaction stream, so creating a fresh closure for every tile on
+// each pointer update would otherwise defeat VideoTile's memoization.
+const MemoTile = memo(function MemoTile({
+  tile, destaque, interactions, interactionTool, markerStyle, pendingReaction, brush,
+  mostrarVolume, volume, onSelectTile, onSetVolume, onToggleMute, onStopBroadcast,
+  onPingTile, onCursorTile, onStrokeTile, onReactionTile
+}) {
+  const volKey = volumeKey(tile.sid, tile.pubName);
+  const onSelect = useCallback(() => onSelectTile(tile.key), [onSelectTile, tile.key]);
+  const onVolume = useCallback((value) => onSetVolume(volKey, value), [onSetVolume, volKey]);
+  const onMute = useCallback(() => onToggleMute(volKey), [onToggleMute, volKey]);
+  const onPing = useCallback((point, marker) => onPingTile(tile.key, point, marker), [onPingTile, tile.key]);
+  const onCursor = useCallback((point) => onCursorTile(tile.key, point), [onCursorTile, tile.key]);
+  const onStroke = useCallback((points, color, width, tool, opacity) => {
+    onStrokeTile(tile.key, points, color, width, tool, opacity);
+  }, [onStrokeTile, tile.key]);
+  const onReactionAt = useCallback((point, reaction) => {
+    onReactionTile(tile.key, reaction, point);
+  }, [onReactionTile, tile.key]);
+
+  return <VideoTile
+    tile={tile}
+    destaque={destaque}
+    onSelect={onSelect}
+    mostrarVolume={mostrarVolume}
+    volume={volume}
+    onVolume={onVolume}
+    onMute={onMute}
+    onParar={onStopBroadcast}
+    interactions={interactions}
+    interactionTool={interactionTool}
+    markerStyle={markerStyle}
+    pendingReaction={pendingReaction}
+    brush={brush}
+    onPing={onPing}
+    onCursor={onCursor}
+    onStroke={onStroke}
+    onReactionAt={onReactionAt}
+  />;
 });
 
 export default function RoomView(props) {
@@ -71,17 +112,19 @@ export default function RoomView(props) {
     isHost, hostIdentity, roomRole, roomPreset, roomLocked, presenter,
     localCanPublish, localCanPublishData,
     chatMessages, onSendChat, onShareFile,
-    onSetRoomPin, onSetRoomPreset, onSetPresenter, onSetParticipantPermission, onKickParticipant,
-    clipSupported, clipBuffering, clipReadySeconds, clipTargetName, onSaveClip,
+    onSetRoomPin, onSetRoomPreset, onSetPresenter, onSetParticipantPermission, onKickParticipant, onVoteKickParticipant,
+    clipSupported, clipBuffering, clipExporting, clipError, clipReadySeconds, clipTargetName,
+    clipEnabled, onToggleClipBuffer, onSaveClip,
     micOn, camOn, currentRoom, myState,
     audioBlocked, onEnableAudio,
     interactions, interactionTool, setInteractionTool,
     markerStyle, setMarkerStyle, pendingReaction, setPendingReaction,
     brush, setBrush,
     onPing, onCursor, onStroke, onReaction,
-    boardOpen, setBoardOpen, boardStrokes, onBoardStroke, onBoardErase, onBoardClear,
+    boardOpen, setBoardOpen, boardStrokes, onBoardStroke, onBoardUndo, onBoardRedo,
+    boardCanUndo, boardCanRedo, onBoardClear,
     attentionRequest, setAttentionRequest, onCallAttention,
-    onShare, onStopBroadcast, onStopAll,
+    onShare, sharing, onStopBroadcast, onStopAll,
     onPauseLive, onResumeLive, onLiveTitle, onCopyLink,
     onToggleMic, onToggleCam, onLeave
   } = props;
@@ -92,6 +135,7 @@ export default function RoomView(props) {
   const [chatDraft, setChatDraft] = useState("");
   const [unreadChat, setUnreadChat] = useState(0);
   const [pinDraft, setPinDraft] = useState("");
+  const [voteKickBusy, setVoteKickBusy] = useState("");
   const fileInputRef = useRef(null);
   const lastChatCountRef = useRef(chatMessages ? chatMessages.length : 0);
   const [layoutMode, setLayoutMode] = useState(() => {
@@ -108,9 +152,10 @@ export default function RoomView(props) {
 
   const [nowDrawer, setNowDrawer] = useState(Date.now());
   useEffect(() => {
+    if (!settingsOpen) return;
     const id = setInterval(() => setNowDrawer(Date.now()), 1000);
     return () => clearInterval(id);
-  }, []);
+  }, [settingsOpen]);
 
   useEffect(() => { setTitleLocal(myState ? myState.titulo : ""); }, [myState && myState.titulo]);
   useEffect(() => {
@@ -134,10 +179,6 @@ export default function RoomView(props) {
     if (!presetLayout || document.fullscreenElement) return;
     setLayoutMode(presetLayout);
   }, [roomPreset]);
-
-  useEffect(() => {
-    if (!boardOpen && interactionTool === "eraser") setInteractionTool(null);
-  }, [boardOpen, interactionTool, setInteractionTool]);
 
   useEffect(() => {
     if (localCanPublishData) return;
@@ -211,16 +252,25 @@ export default function RoomView(props) {
   }, [tiles, selected]);
 
   const targetInteraction = boardOpen ? "board" : (selTile ? selTile.key : null);
-  const boardInteractions = useMemo(() => interactions.filter((item) => item.tile === "board"), [interactions]);
+  const interactionsByTile = useMemo(() => {
+    const grouped = new Map();
+    (interactions || []).forEach((item) => {
+      const list = grouped.get(item.tile);
+      if (list) list.push(item);
+      else grouped.set(item.tile, [item]);
+    });
+    return grouped;
+  }, [interactions]);
+  const boardInteractions = interactionsByTile.get("board") || EMPTY_INTERACTIONS;
 
   const volCurrent = useCallback((key) => volumes[key] || { value: 100, muted: !!settings.startMuted }, [volumes, settings.startMuted]);
   const setVol = useCallback((key, pct) => setVolumes((previous) => ({ ...previous, [key]: { value: pct, muted: false } })), [setVolumes]);
   const toggleMute = useCallback((key) => {
     setVolumes((previous) => {
-      const current = previous[key] || { value: 100, muted: false };
+      const current = previous[key] || { value: 100, muted: !!settings.startMuted };
       return { ...previous, [key]: { value: current.value, muted: !current.muted } };
     });
-  }, [setVolumes]);
+  }, [setVolumes, settings.startMuted]);
 
   useEffect(() => {
     function onKey(event) {
@@ -240,7 +290,7 @@ export default function RoomView(props) {
         const volumeKeyCurrent = volumeKey(selTile.sid, selTile.pubName);
         const current = volCurrent(volumeKeyCurrent);
         const step = key === "arrowup" ? 10 : -10;
-        setVol(volumeKeyCurrent, Math.max(0, Math.min(150, (current.muted ? 0 : current.value) + step)));
+        setVol(volumeKeyCurrent, Math.max(0, Math.min(100, (current.muted ? 0 : current.value) + step)));
       } else if (key === "escape" && !document.fullscreenElement && layoutMode !== "default") {
         setLayoutMode("default");
       }
@@ -249,6 +299,11 @@ export default function RoomView(props) {
     return () => window.removeEventListener("keydown", onKey);
   }, [goFullscreen, switchMode, layoutMode, setSettings, tiles, selTile, boardOpen, volCurrent, setVol, setBoardOpen, setSelected]);
 
+  const selectTile = useCallback((key) => {
+    setBoardOpen(false);
+    setSelected(key);
+  }, [setBoardOpen, setSelected]);
+
   const renderTile = useCallback((tile, highlighted) => {
     const volKey = volumeKey(tile.sid, tile.pubName);
     return (
@@ -256,25 +311,24 @@ export default function RoomView(props) {
         key={tile.key}
         tile={tile}
         destaque={highlighted}
-        agora={0}
-        onSelect={(key) => { setBoardOpen(false); setSelected(key); }}
+        onSelectTile={selectTile}
         mostrarVolume={highlighted && tile.isScreen && !tile.isLocal}
         volume={volCurrent(volKey)}
-        onVolume={(value) => setVol(volKey, value)}
-        onMute={() => toggleMute(volKey)}
-        onParar={onStopBroadcast}
-        interactions={highlighted ? interactions.filter((item) => item.tile === tile.key) : []}
+        onSetVolume={setVol}
+        onToggleMute={toggleMute}
+        onStopBroadcast={onStopBroadcast}
+        interactions={highlighted ? (interactionsByTile.get(tile.key) || EMPTY_INTERACTIONS) : EMPTY_INTERACTIONS}
         interactionTool={highlighted ? interactionTool : null}
-        markerStyle={markerStyle}
-        pendingReaction={pendingReaction}
-        brush={brush}
-        onPing={(point, marker) => onPing(tile.key, point, marker)}
-        onCursor={(point) => onCursor(tile.key, point)}
-        onStroke={(points, color, width) => onStroke(tile.key, points, color, width)}
-        onReactionAt={(point, reaction) => onReaction(tile.key, reaction, point)}
+        markerStyle={highlighted ? markerStyle : null}
+        pendingReaction={highlighted ? pendingReaction : null}
+        brush={highlighted ? brush : null}
+        onPingTile={onPing}
+        onCursorTile={onCursor}
+        onStrokeTile={onStroke}
+        onReactionTile={onReaction}
       />
     );
-  }, [setBoardOpen, setSelected, volCurrent, setVol, toggleMute, onStopBroadcast, interactions, interactionTool, markerStyle, pendingReaction, brush, onPing, onCursor, onStroke, onReaction]);
+  }, [selectTile, volCurrent, setVol, toggleMute, onStopBroadcast, interactionsByTile, interactionTool, markerStyle, pendingReaction, brush, onPing, onCursor, onStroke, onReaction]);
 
   const [statusText, statusClass] = STATUS_MAP[connState] || STATUS_MAP.connecting;
   const layoutBtns = [
@@ -299,6 +353,90 @@ export default function RoomView(props) {
   }
 
   const markerLabels = { ring: "Círculo", arrow: "Seta", "1": "Número 1", "2": "Número 2", "3": "Número 3" };
+
+  const drawingInspector = (
+    <div className="drawing-inspector">
+      <div className="inspector-head">
+        <span>Desenho</span>
+        <b>{DRAW_TOOL_LABELS[brush.tool] || "Caneta"}</b>
+      </div>
+      <div className="inspector-section">
+        <span className="inspector-label">Ferramenta</span>
+        <div className="drawing-tool-menu">
+          {DRAW_TOOLS.map((tool) => (
+            <Button key={tool} size="small" type={brush.tool === tool ? "primary" : "text"}
+              onClick={() => {
+                setPendingReaction(null);
+                setBrush({ ...brush, tool });
+                setInteractionTool("draw");
+              }}>
+              {DRAW_TOOL_LABELS[tool]}
+            </Button>
+          ))}
+        </div>
+      </div>
+      <div className="inspector-section">
+        <span className="inspector-label">Cor</span>
+        <div className="inspector-palette">
+          {DRAW_COLORS.map((color) => (
+            <button key={color} className={"brush-color" + (brush.color === color ? " active" : "")}
+              style={{ "--brush-color": color }} aria-label={"Cor " + color}
+              onClick={() => setBrush({ ...brush, color })} />
+          ))}
+          <label className="brush-custom-color" title="Cor personalizada">
+            <input type="color" value={brush.color} aria-label="Cor personalizada"
+              onChange={(event) => setBrush({ ...brush, color: event.target.value })} />
+          </label>
+        </div>
+      </div>
+      <div className="inspector-section inspector-size-row">
+        <span className="inspector-label">Tamanho</span>
+        <div className="inspector-widths">
+          {DRAW_WIDTHS.map((width) => (
+            <button key={width} className={"brush-width" + (brush.width === width ? " active" : "")}
+              aria-label={"Espessura " + width} onClick={() => setBrush({ ...brush, width })}>
+              <span style={{ width: width + 4, height: width + 4 }} />
+            </button>
+          ))}
+        </div>
+      </div>
+      {boardOpen && (
+        <div className="inspector-board-actions">
+          <Tooltip title="Desfazer"><Button size="small" icon={<UndoOutlined />} aria-label="Desfazer"
+            disabled={!boardCanUndo} onClick={onBoardUndo} /></Tooltip>
+          <Tooltip title="Refazer"><Button size="small" icon={<RedoOutlined />} aria-label="Refazer"
+            disabled={!boardCanRedo} onClick={onBoardRedo} /></Tooltip>
+          <Tooltip title="Limpar o quadro"><Button size="small" danger icon={<DeleteOutlined />}
+            aria-label="Limpar o quadro" onClick={onBoardClear} /></Tooltip>
+        </div>
+      )}
+      <p className="inspector-note">
+        {boardOpen
+          ? "No canvas, os desenhos permanecem até alguém desfazer ou limpar o quadro."
+          : "Sobre a transmissão, cada desenho desaparece automaticamente após 10 segundos."}
+      </p>
+    </div>
+  );
+
+  const moreControls = (
+    <div className="toolbar-more-menu">
+      <div className={"toolbar-more-status " + statusClass}>
+        <span />{statusText}
+      </div>
+      <Button type="text" icon={<LinkOutlined />} onClick={onCopyLink}>Convidar pessoas</Button>
+      <div className="toolbar-more-divider" />
+      <span className="toolbar-more-label">Visualização</span>
+      {layoutBtns.map((button) => (
+        <Button key={button.mode} type={layoutMode === button.mode ? "primary" : "text"}
+          icon={button.icon} onClick={() => switchMode(button.mode)}>{button.title}</Button>
+      ))}
+      <div className="toolbar-more-divider" />
+      <Button type="text" icon={theme.dark ? <Sun /> : <Moon />} onClick={theme.toggle}>
+        {theme.dark ? "Tema claro" : "Tema escuro"}
+      </Button>
+      <Button type="text" danger icon={<LogoutOutlined />} onClick={onLeave}>Sair da sala</Button>
+    </div>
+  );
 
   return (
     <div className="room" data-mode={layoutMode} data-hud={hudVisible ? "on" : "off"} ref={roomRef}>
@@ -361,7 +499,6 @@ export default function RoomView(props) {
                 markerStyle={markerStyle}
                 pendingReaction={pendingReaction}
                 onStroke={onBoardStroke}
-                onErase={onBoardErase}
                 onPing={(point, marker) => onPing("board", point, marker)}
                 onCursor={(point) => onCursor("board", point)}
                 onReactionAt={(point, reaction) => onReaction("board", reaction, point)}
@@ -383,46 +520,73 @@ export default function RoomView(props) {
       </div>
 
       {audios.map((audio) => (
-        <AudioSink key={audio.key} track={audio.track}
+      <AudioSink key={audio.key} track={audio.track}
           volume={volCurrent(volumeKey(audio.sid, audio.pubName))}
           muteAll={settings.muteAll}
-          personVolume={getPersonSettings(peopleSettings, audio.owner).volume} />
+          personVolume={getPersonSettings(peopleSettings, audio.ownerIdentity, audio.owner).volume} />
       ))}
 
       <div className="toolbar">
-        <Touch><Button type="primary" icon={<DesktopOutlined />} disabled={!localCanPublish || screenCount >= MAX_SCREENS} onClick={onShare}>
-          {!localCanPublish ? "Modo espectador" : (screenCount === 0 ? "Compartilhar tela" : (screenCount === 1 ? "Compartilhar outra" : "Limite atingido"))}
-        </Button></Touch>
-        <Touch><Button icon={<StopOutlined />} danger disabled={!localCanPublish || screenCount === 0} onClick={onStopAll}>
-          {screenCount > 1 ? "Parar tudo" : "Parar"}
-        </Button></Touch>
-        {screenCount > 0 && localCanPublish && (myState && myState.estado === "pausado"
-          ? <Touch><Button icon={<CaretRightOutlined />} type="primary" onClick={onResumeLive}>Retomar</Button></Touch>
-          : <Touch><Button icon={<PauseOutlined />} onClick={onPauseLive}>Pausar</Button></Touch>)}
-        <Touch><Button disabled={!localCanPublish} icon={micOn ? <AudioOutlined /> : <AudioMutedOutlined />} type={micOn ? "primary" : "default"} onClick={onToggleMic}>Microfone</Button></Touch>
-        <Touch><Button disabled={!localCanPublish} icon={<VideoCameraOutlined />} type={camOn ? "primary" : "default"} onClick={onToggleCam}>Câmera</Button></Touch>
-
-        <Popover trigger="click" placement="top" content={
-          <div className="clip-menu">
-            <div className="clip-title">Clipe instantâneo</div>
-            <div className="clip-meta">{clipTargetName || "Nenhuma transmissão"} · {clipBuffering ? Math.min(45, clipReadySeconds) + "s disponíveis" : "parado"}</div>
-            <Button block size="small" disabled={!clipBuffering || clipReadySeconds < 5} onClick={() => onSaveClip(15)}>Salvar últimos 15s</Button>
-            <Button block size="small" disabled={!clipBuffering || clipReadySeconds < 5} onClick={() => onSaveClip(30)}>Salvar últimos 30s</Button>
-            {!clipSupported && <span className="clip-note">Seu navegador não oferece gravação de clipes.</span>}
-          </div>
-        }>
-          <Button icon={<ScissorOutlined />} disabled={!clipSupported || !clipTargetName}>Clipe</Button>
-        </Popover>
-
-        {isHost && (
-          <Tooltip title={presenter ? "Liberar o destaque para cada pessoa escolher" : "Fixar o que você está vendo para todos"}>
-            <Button type={presenter ? "primary" : "default"} icon={<PushpinOutlined />}
-              disabled={!presenter && !presenterTarget}
-              onClick={() => onSetPresenter(presenter ? null : presenterTarget)}>
-              {presenter ? "Liberar destaque" : "Apresentar"}
-            </Button>
+        <span className="control-cluster media-controls">
+          <Touch><Button className="share-control" type="primary" icon={<DesktopOutlined />}
+            loading={sharing} disabled={!localCanPublish || sharing || screenCount >= MAX_SCREENS} onClick={onShare}>
+            {!localCanPublish ? "Espectador" : (sharing ? "Escolhendo" : (screenCount === 0 ? "Compartilhar" : (screenCount === 1 ? "Outra tela" : "Limite")))}
+          </Button></Touch>
+          <Tooltip title={screenCount > 1 ? "Parar todas as transmissões" : "Parar transmissão"}>
+            <Touch><Button icon={<StopOutlined />} danger disabled={!localCanPublish || screenCount === 0}
+              aria-label="Parar transmissão" onClick={onStopAll} /></Touch>
           </Tooltip>
-        )}
+          {screenCount > 0 && localCanPublish && (myState && myState.estado === "pausado"
+            ? <Tooltip title="Retomar transmissão"><Touch><Button icon={<CaretRightOutlined />} type="primary"
+              aria-label="Retomar transmissão" onClick={onResumeLive} /></Touch></Tooltip>
+            : <Tooltip title="Pausar transmissão"><Touch><Button icon={<PauseOutlined />}
+              aria-label="Pausar transmissão" onClick={onPauseLive} /></Touch></Tooltip>)}
+          <Tooltip title={micOn ? "Desligar microfone" : "Ligar microfone"}>
+            <Touch><Button disabled={!localCanPublish} icon={micOn ? <AudioOutlined /> : <AudioMutedOutlined />}
+              type={micOn ? "primary" : "default"} aria-label="Microfone" onClick={onToggleMic} /></Touch>
+          </Tooltip>
+          <Tooltip title={camOn ? "Desligar câmera" : "Ligar câmera"}>
+            <Touch><Button disabled={!localCanPublish} icon={<VideoCameraOutlined />}
+              type={camOn ? "primary" : "default"} aria-label="Câmera" onClick={onToggleCam} /></Touch>
+          </Tooltip>
+
+          <Popover trigger="click" placement="top" content={
+            <div className="clip-menu">
+              <div className="clip-title">Clipe instantâneo</div>
+              <div className="clip-meta">{clipTargetName || "Nenhuma transmissão"}</div>
+              {!clipEnabled ? (
+                <>
+                  <span className="clip-note">O buffer local fica desligado para não disputar CPU com a transmissão.</span>
+                  <Button block size="small" type="primary" onClick={onToggleClipBuffer}>Ativar buffer para esta tela</Button>
+                </>
+              ) : (
+                <>
+                  <div className="clip-meta">{clipBuffering
+                    ? Math.min(45, clipReadySeconds) + "s disponíveis"
+                    : (clipError ? "indisponível" : "preparando buffer")}</div>
+                  <Button block size="small" loading={clipExporting} disabled={!clipBuffering || clipReadySeconds < 15 || clipExporting}
+                    onClick={() => onSaveClip(15)}>Salvar últimos 15s</Button>
+                  <Button block size="small" loading={clipExporting} disabled={!clipBuffering || clipReadySeconds < 30 || clipExporting}
+                    onClick={() => onSaveClip(30)}>Salvar últimos 30s</Button>
+                  <Button block size="small" onClick={onToggleClipBuffer}>Desligar buffer</Button>
+                  {clipError && <span className="clip-note clip-error">{clipError}</span>}
+                  {!clipSupported && !clipError && <span className="clip-note">Verificando o codificador do navegador…</span>}
+                </>
+              )}
+            </div>
+          }>
+            <Tooltip title="Criar clipe"><Button icon={<ScissorOutlined />} disabled={!clipTargetName} aria-label="Criar clipe" /></Tooltip>
+          </Popover>
+
+          {isHost && (
+            <Tooltip title={presenter ? "Liberar o destaque" : "Apresentar isto para todos"}>
+              <Button type={presenter ? "primary" : "default"} icon={<PushpinOutlined />}
+                aria-label={presenter ? "Liberar destaque" : "Apresentar"}
+                disabled={!presenter && !presenterTarget}
+                onClick={() => onSetPresenter(presenter ? null : presenterTarget)} />
+            </Tooltip>
+          )}
+        </span>
 
         <span className="interaction-tools">
           <Tooltip title="Mostrar seu cursor para a sala">
@@ -446,27 +610,37 @@ export default function RoomView(props) {
                 icon={<AimOutlined />} aria-label="Marcador" />
             </Tooltip>
           </Popover>
-          <Tooltip title="Desenhar">
-            <Button disabled={!localCanPublishData || !targetInteraction} type={interactionTool === "draw" ? "primary" : "default"} icon={<EditOutlined />}
-              aria-label="Desenhar" onClick={() => { setPendingReaction(null); setInteractionTool(interactionTool === "draw" ? null : "draw"); }} />
-          </Tooltip>
-          <Tooltip title="Borracha do quadro">
-            <Button disabled={!localCanPublishData || !boardOpen} type={interactionTool === "eraser" ? "primary" : "default"} icon={<ClearOutlined />}
-              aria-label="Borracha" onClick={() => { setPendingReaction(null); setInteractionTool(interactionTool === "eraser" ? null : "eraser"); }} />
-          </Tooltip>
+          <Popover trigger="click" placement="top" content={drawingInspector}>
+            <Tooltip title="Ferramentas de desenho">
+              <Button disabled={!localCanPublishData || !targetInteraction}
+                type={interactionTool === "draw" ? "primary" : "default"}
+                icon={brush.tool === "eraser" ? <ClearOutlined /> : <EditOutlined />}
+                aria-label="Ferramentas de desenho" />
+            </Tooltip>
+          </Popover>
           <Popover trigger="click" placement="top" content={
             <div className="reaction-menu">
-              {REACTIONS.map(({ key, Icon, label }) => (
+              {REACTIONS.map(({ key, emoji, label }) => (
                 <Tooltip key={key} title={label}>
                   <button className="reaction-button" aria-label={label} disabled={!targetInteraction || !localCanPublishData}
-                    onClick={() => { setPendingReaction(key); setInteractionTool("reaction"); }}><Icon /></button>
+                    onClick={() => {
+                      if (!targetInteraction) return;
+                      onReaction(targetInteraction, key, {
+                        x: 0.66 + Math.random() * 0.24,
+                        y: 0.84 + Math.random() * 0.1
+                      });
+                      setPendingReaction(null);
+                      if (interactionTool === "reaction") setInteractionTool(null);
+                    }}>
+                    <span className="reaction-emoji">{emoji}</span>
+                  </button>
                 </Tooltip>
               ))}
-              <span className="reaction-hint">Escolha e clique onde a reação deve aparecer.</span>
+              <span className="reaction-hint">Um clique envia a reação para a área ativa.</span>
             </div>
           }>
             <Button aria-label="Reagir" disabled={!targetInteraction || !localCanPublishData}
-              type={interactionTool === "reaction" ? "primary" : "default"} className="reaction-trigger"><span className="reaction-symbol">♥</span></Button>
+              className="reaction-trigger"><span className="reaction-symbol">😊</span></Button>
           </Popover>
           <Tooltip title="Quadro compartilhado">
             <Button type={boardOpen ? "primary" : "default"} icon={<BorderOutlined />} aria-label="Quadro compartilhado"
@@ -478,60 +652,25 @@ export default function RoomView(props) {
           </Tooltip>
         </span>
 
-        {localCanPublishData && (interactionTool === "draw" || boardOpen) && (
-          <span className="brush-tools">
-            {DRAW_COLORS.map((color) => (
-              <button key={color} className={"brush-color" + (brush.color === color ? " active" : "")}
-                style={{ "--brush-color": color }} aria-label={"Cor " + color}
-                onClick={() => setBrush({ ...brush, color })} />
-            ))}
-            {DRAW_WIDTHS.map((width) => (
-              <button key={width} className={"brush-width" + (brush.width === width ? " active" : "")}
-                aria-label={"Espessura " + width} onClick={() => setBrush({ ...brush, width })}>
-                <span style={{ width: width + 4, height: width + 4 }} />
-              </button>
-            ))}
-            {boardOpen && (
-              <Tooltip title="Limpar o quadro">
-                <Button icon={<DeleteOutlined />} aria-label="Limpar o quadro" disabled={!localCanPublishData} onClick={onBoardClear} />
-              </Tooltip>
-            )}
-          </span>
-        )}
-
-        <span className="spacer" />
-
-        <span className="modes">
-          {layoutBtns.map((button) => (
-            <Touch key={button.mode}>
-              <Tooltip title={button.title}>
-                <Button type={layoutMode === button.mode ? "primary" : "default"} icon={button.icon}
-                  aria-label={button.title} onClick={() => switchMode(button.mode)} />
-              </Tooltip>
-            </Touch>
-          ))}
+        <span className="control-cluster app-controls">
+          <Badge count={unreadChat} size="small" overflowCount={99}>
+            <Tooltip title="Chat"><Button icon={<CommentOutlined />} type={chatOpen ? "primary" : "default"}
+              aria-label="Chat" onClick={() => setChatOpen(true)} /></Tooltip>
+          </Badge>
+          <Tooltip title="Pessoas"><Button icon={<TeamOutlined />} aria-label="Pessoas"
+            onClick={() => setConnectionsOpen(true)} /></Tooltip>
+          <Tooltip title="Ajustes"><Button icon={<SettingOutlined />} aria-label="Ajustes"
+            onClick={() => setSettingsOpen(true)} /></Tooltip>
+          <Popover trigger="click" placement="topRight" content={moreControls}>
+            <Tooltip title="Mais opções"><Button icon={<EllipsisOutlined />} aria-label="Mais opções" /></Tooltip>
+          </Popover>
         </span>
-
-        <span className={"status " + statusClass}>{statusText}</span>
-        <Touch>
-          <Tooltip title={theme.dark ? "Tema claro" : "Tema escuro"}>
-            <Button className="theme-btn" aria-label="Alternar tema"
-              icon={theme.dark ? <Sun /> : <Moon />} onClick={theme.toggle} />
-          </Tooltip>
-        </Touch>
-        <Touch><Tooltip title="Copiar link da sala"><Button icon={<LinkOutlined />} onClick={onCopyLink}>Convidar</Button></Tooltip></Touch>
-        <Badge count={unreadChat} size="small" overflowCount={99}>
-          <Button icon={<CommentOutlined />} type={chatOpen ? "primary" : "default"} onClick={() => setChatOpen(true)}>Chat</Button>
-        </Badge>
-        <Touch><Button icon={<SettingOutlined />} onClick={() => setSettingsOpen(true)}>Ajustes</Button></Touch>
-        <Touch><Button icon={<TeamOutlined />} onClick={() => setConnectionsOpen(true)}>Pessoas</Button></Touch>
-        <Touch><Button icon={<LogoutOutlined />} onClick={onLeave}>Sair</Button></Touch>
       </div>
 
       <Drawer title="Pessoas" placement="right" open={connectionsOpen} onClose={() => setConnectionsOpen(false)} width={350}>
         {people.length === 0 && <Empty description="Ninguém por aqui" />}
         {people.map((person) => {
-          const personSettings = getPersonSettings(peopleSettings, person.rawName);
+          const personSettings = getPersonSettings(peopleSettings, person.identity, person.rawName);
           return (
             <div className="person-card" key={person.key}>
               <div className="person-card-head">
@@ -550,24 +689,24 @@ export default function RoomView(props) {
                     <Tooltip title={personSettings.muted ? "Ouvir o microfone" : "Silenciar o microfone"}>
                       <Button size="small" type={personSettings.muted ? "primary" : "default"}
                         icon={personSettings.muted ? <AudioMutedOutlined /> : <AudioOutlined />}
-                        onClick={() => onPersonSetting(person.rawName, { muted: !personSettings.muted })} />
+                        onClick={() => onPersonSetting(person.identity, { muted: !personSettings.muted })} />
                     </Tooltip>
                     <Tooltip title={personSettings.cameraHidden ? "Mostrar a câmera" : "Esconder a câmera"}>
                       <Button size="small" type={personSettings.cameraHidden ? "primary" : "default"}
                         icon={personSettings.cameraHidden ? <EyeInvisibleOutlined /> : <VideoCameraAddOutlined />}
-                        onClick={() => onPersonSetting(person.rawName, { cameraHidden: !personSettings.cameraHidden })} />
+                        onClick={() => onPersonSetting(person.identity, { cameraHidden: !personSettings.cameraHidden })} />
                     </Tooltip>
                     <Tooltip title={personSettings.interactionsHidden ? "Voltar a ver interações" : "Esconder interações desta pessoa"}>
                       <Button size="small" type={personSettings.interactionsHidden ? "primary" : "default"}
                         icon={<MessageOutlined />}
-                        onClick={() => onPersonSetting(person.rawName, { interactionsHidden: !personSettings.interactionsHidden })} />
+                        onClick={() => onPersonSetting(person.identity, { interactionsHidden: !personSettings.interactionsHidden })} />
                     </Tooltip>
                   </div>
                   <div className="person-volume">
                     <span>Volume</span>
-                    <Slider min={0} max={150} value={personSettings.volume} style={{ flex: 1, margin: 0 }}
+                    <Slider min={0} max={100} value={personSettings.volume} style={{ flex: 1, margin: 0 }}
                       tooltip={{ formatter: (value) => value + "%" }}
-                      onChange={(value) => onPersonSetting(person.rawName, { volume: value })} />
+                      onChange={(value) => onPersonSetting(person.identity, { volume: value })} />
                   </div>
                   <div className="person-state">
                     {personSettings.muted && "microfone silenciado"}
@@ -586,12 +725,27 @@ export default function RoomView(props) {
                       <Button danger size="small" icon={<UserDeleteOutlined />} onClick={() => onKickParticipant(person.identity)}>Remover da sala</Button>
                     </div>
                   )}
+                  {!isHost && person.identity !== hostIdentity && (
+                    <div className="vote-kick-control">
+                      <span>Votação válida só nesta sessão. Não bloqueia a pessoa de entrar novamente.</span>
+                      <Button danger size="small" icon={<UserDeleteOutlined />}
+                        loading={voteKickBusy === person.identity}
+                        disabled={!!voteKickBusy}
+                        onClick={async () => {
+                          setVoteKickBusy(person.identity);
+                          try { await onVoteKickParticipant(person.identity); }
+                          finally { setVoteKickBusy(""); }
+                        }}>
+                        Votar para remover
+                      </Button>
+                    </div>
+                  )}
                 </>
               )}
             </div>
           );
         })}
-        <p className="drawer-note">Silenciar o microfone ou esconder a câmera de alguém cancela a inscrição daquela faixa, reduzindo o tráfego recebido. A transmissão de tela da pessoa não é afetada.</p>
+        <p className="drawer-note">Silenciar o microfone ou esconder a câmera de alguém cancela a inscrição daquela faixa, reduzindo o tráfego recebido. Votekick exige maioria, expira em 90 segundos e nunca vira ban permanente.</p>
       </Drawer>
 
       <Drawer title="Chat da sala" placement="right" open={chatOpen} onClose={() => setChatOpen(false)} width={390}>
@@ -733,6 +887,10 @@ export default function RoomView(props) {
           <div className="drawer-row"><span>Qualidade que eu envio</span>
             <Select disabled={!localCanPublish} value={settings.sendQuality} options={SEND_OPTIONS} style={{ width: 165 }}
               onChange={(value) => setSettings((current) => ({ ...current, sendQuality: value }))} /></div>
+          <div className="drawer-row"><span>Tipo de conteúdo</span>
+            <Select disabled={!localCanPublish} value={settings.shareContent} options={CONTENT_OPTIONS} style={{ width: 180 }}
+              onChange={(value) => setSettings((current) => ({ ...current, shareContent: value }))} /></div>
+          <span className="host-room-help">Movimento preserva fluidez. Detalhes prioriza a nitidez de texto, código e apresentações quando a rede oscilar.</span>
         </div>
         <div className="drawer-group">
           <span className="drawer-title">Quando eu assisto</span>

@@ -19,8 +19,13 @@ function Terms({ open, onClose }) {
   );
 }
 
+function readSavedName() {
+  try { return localStorage.getItem("meuNome") || ""; }
+  catch (e) { return ""; }
+}
+
 export default function JoinScreen({ joining, onJoin }) {
-  const [name, setName] = useState(localStorage.getItem("meuNome") || "");
+  const [name, setName] = useState(readSavedName);
   const [room, setRoom] = useState(() => {
     try { return new URLSearchParams(window.location.search).get("sala") || "geral"; }
     catch (e) { return "geral"; }
@@ -32,13 +37,18 @@ export default function JoinScreen({ joining, onJoin }) {
   const theme = useTheme();
 
   useEffect(() => {
-    if (!localStorage.getItem("viuTermos")) {
+    try {
+      if (localStorage.getItem("viuTermos")) return;
       setTermsOpen(true);
       localStorage.setItem("viuTermos", "1");
+    } catch (e) {
+      // Private browsing/storage-disabled contexts must still be able to join.
+      setTermsOpen(true);
     }
   }, []);
 
   function submit() {
+    if (joining) return;
     const cleanName = (name || "").trim() || "convidado";
     const cleanRoom = (room || "").trim() || "geral";
     onJoin(cleanName, cleanRoom, {
@@ -64,18 +74,18 @@ export default function JoinScreen({ joining, onJoin }) {
         <div className="field">
           <label htmlFor="name">Seu nome</label>
           <Input id="name" size="large" placeholder="Seu nome" maxLength={40}
-            value={name} onChange={(event) => setName(event.target.value)} onPressEnter={submit} />
+            value={name} disabled={joining} onChange={(event) => setName(event.target.value)} onPressEnter={submit} />
         </div>
 
         <div className="field">
           <label htmlFor="room">Nome da sala</label>
           <Input id="room" size="large" placeholder="geral" maxLength={40}
-            value={room} onChange={(event) => setRoom(event.target.value)} onPressEnter={submit} />
+            value={room} disabled={joining} onChange={(event) => setRoom(event.target.value)} onPressEnter={submit} />
         </div>
 
         <div className="field">
           <label>Como você quer entrar?</label>
-          <Segmented block value={role} onChange={setRole} options={[
+          <Segmented block disabled={joining} value={role} onChange={setRole} options={[
             { value: "participant", label: <span><UserOutlined /> Participar</span> },
             { value: "spectator", label: <span><EyeOutlined /> Só assistir</span> }
           ]} />
@@ -85,11 +95,11 @@ export default function JoinScreen({ joining, onJoin }) {
           <div className="field">
             <label htmlFor="pin">PIN da sala <span className="field-optional">opcional</span></label>
             <Input.Password id="pin" size="large" placeholder="Se a sala tiver PIN" maxLength={24}
-              value={pin} onChange={(event) => setPin(event.target.value)} onPressEnter={submit} />
+              value={pin} disabled={joining} onChange={(event) => setPin(event.target.value)} onPressEnter={submit} />
           </div>
           <div className="field">
             <label>Modo se a sala for nova</label>
-            <Select size="large" value={preset} options={PRESET_OPTIONS} style={{ width: "100%" }} onChange={setPreset} />
+            <Select size="large" disabled={joining} value={preset} options={PRESET_OPTIONS} style={{ width: "100%" }} onChange={setPreset} />
           </div>
         </div>
         <p className="preset-hint">{ROOM_PRESETS[preset]?.description}</p>

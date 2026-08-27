@@ -10,7 +10,8 @@ x-logging: &default-logging
 
 services:
   livekit:
-    image: livekit/livekit-server:latest
+    # Pino configuravel para rollback sem editar o Compose.
+    image: ${LIVEKIT_SERVER_IMAGE:-livekit/livekit-server:v1.13.6}
     command: --config /etc/livekit.yaml
     restart: unless-stopped
     network_mode: "host"
@@ -31,15 +32,25 @@ services:
   # (o deploy.sh faz isso quando voce passa --with-frontend).
   frontend:
     profiles: ["web"]
-    build: ./frontend
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        MAZESTREAM_BUILD_PROFILE: ${MAZESTREAM_BUILD_PROFILE:-host}
     restart: unless-stopped
     logging: *default-logging
     ports:
       - "127.0.0.1:3000:3000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:-}
       - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-}
       - PUBLIC_WSS_URL=${PUBLIC_WSS_URL:-}
+      - LIVEKIT_API_URL=${LIVEKIT_API_URL:-http://host.docker.internal:7880}
+      - MAX_ROOMS=${MAX_ROOMS:-2}
+      - MAX_PARTICIPANTS_PER_ROOM=${MAX_PARTICIPANTS_PER_ROOM:-10}
+      - TOKENS_POR_SEG=${TOKENS_POR_SEG:-20}
 
   # Relay de eventos pro Discord. So sobe com: docker compose --profile discord up -d
   # (o deploy.sh faz isso quando voce passa --discord-webhook URL).
@@ -50,6 +61,20 @@ services:
     logging: *default-logging
     ports:
       - "127.0.0.1:8080:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-}
       - PUBLIC_URL=${PUBLIC_URL:-}
+      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:-}
+      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-}
+      - PUBLIC_WSS_URL=${PUBLIC_WSS_URL:-}
+      - LIVEKIT_API_URL=${LIVEKIT_API_URL:-http://host.docker.internal:7880}
+      - LIVEKIT_METRICS_URL=${LIVEKIT_METRICS_URL:-http://host.docker.internal:6789/metrics}
+      - DISCORD_APPLICATION_ID=${DISCORD_APPLICATION_ID:-}
+      - DISCORD_PUBLIC_KEY=${DISCORD_PUBLIC_KEY:-}
+      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN:-}
+      - DISCORD_GUILD_ID=${DISCORD_GUILD_ID:-}
+      - ALERTA_MBPS=${ALERTA_MBPS:-120}
+      - BANDWIDTH_INTERVAL_SECONDS=${BANDWIDTH_INTERVAL_SECONDS:-30}
+      - BANDWIDTH_ALERT_COOLDOWN_MINUTES=${BANDWIDTH_ALERT_COOLDOWN_MINUTES:-10}

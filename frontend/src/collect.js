@@ -8,13 +8,13 @@ export function getParticipantName(participant) {
   return (participant && (participant.name || participant.identity)) || "";
 }
 
-export function getPersonSettings(settings, name) {
-  const current = (settings && settings[name]) || {};
+export function getPersonSettings(settings, key, legacyKey) {
+  const current = (settings && settings[key]) || (legacyKey && settings && settings[legacyKey]) || {};
   return {
     muted: !!current.muted,
     cameraHidden: !!current.cameraHidden,
     interactionsHidden: !!current.interactionsHidden,
-    volume: typeof current.volume === "number" ? Math.max(0, Math.min(150, current.volume)) : 100
+    volume: typeof current.volume === "number" ? Math.max(0, Math.min(100, current.volume)) : 100
   };
 }
 
@@ -87,7 +87,7 @@ export function useCollectTiles(room, trackVersion, metaVersion, peopleSettings)
     room.remoteParticipants.forEach((p) => {
       const st = readState(p);
       const displayName = getParticipantName(p);
-      const personSettings = getPersonSettings(peopleSettings, displayName);
+      const personSettings = getPersonSettings(peopleSettings, p.identity, displayName);
       p.trackPublications.forEach((pub) => {
         if (pub.isSubscribed && pub.track && pub.track.kind === "video") {
           const isScreen = pub.source === Track.Source.ScreenShare;
@@ -121,7 +121,7 @@ export function useCollectAudios(room, trackVersion) {
             track: pub.track,
             sid: p.sid,
             pubName: pub.trackName,
-            owner: getParticipantName(p)
+            owner: getParticipantName(p), ownerIdentity: p.identity
           });
         }
       });

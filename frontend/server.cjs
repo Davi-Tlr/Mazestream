@@ -8,19 +8,28 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const { URL } = require("url");
+const { registerVote, cleanupVoteKicks } = require("./server-votekick.cjs");
+
+function boundedInt(name, fallback, min, max) {
+  const parsed = Number.parseInt(process.env[name] || "", 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(max, parsed));
+}
 
 const API_KEY = process.env.LIVEKIT_API_KEY || "";
 const API_SECRET = process.env.LIVEKIT_API_SECRET || "";
 const WSS_URL = process.env.PUBLIC_WSS_URL || "";
 const API_URL = (process.env.LIVEKIT_API_URL
   || WSS_URL.replace(/^wss:/, "https:").replace(/^ws:/, "http:")).replace(/\/+$/, "");
-const MAX_ROOMS = parseInt(process.env.MAX_ROOMS || "5", 10);
-const TOKENS_POR_SEG = parseInt(process.env.TOKENS_POR_SEG || "40", 10);
-const PORT = parseInt(process.env.PORT || "3000", 10);
+const MAX_ROOMS = boundedInt("MAX_ROOMS", 2, 1, 1000);
+const MAX_PARTICIPANTS_PER_ROOM = boundedInt("MAX_PARTICIPANTS_PER_ROOM", 10, 2, 100);
+const TOKENS_POR_SEG = boundedInt("TOKENS_POR_SEG", 20, 1, 1000);
+const PORT = boundedInt("PORT", 3000, 1, 65535);
+const HOST = process.env.HOST || "0.0.0.0";
 const DIST = path.join(__dirname, "dist");
-const SHARE_MAX_MB = Math.max(1, Math.min(20, parseInt(process.env.SHARE_MAX_MB || "8", 10)));
-const SHARE_TOTAL_MB = Math.max(SHARE_MAX_MB, Math.min(128, parseInt(process.env.SHARE_TOTAL_MB || "32", 10)));
-const SHARE_TTL_MS = Math.max(5, Math.min(180, parseInt(process.env.SHARE_TTL_MIN || "60", 10))) * 60 * 1000;
+const SHARE_MAX_MB = boundedInt("SHARE_MAX_MB", 8, 1, 20);
+const SHARE_TOTAL_MB = Math.max(SHARE_MAX_MB, boundedInt("SHARE_TOTAL_MB", 32, 1, 128));
+const SHARE_TTL_MS = boundedInt("SHARE_TTL_MIN", 60, 5, 180) * 60 * 1000;
 const ROOM_STATE_TTL_MS = 12 * 60 * 60 * 1000;
 const SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 
@@ -68,6 +77,7 @@ function adminToken(grant) {
   return signJwt({ iss: API_KEY, sub: "mazestream-admin", nbf: now, exp: now + 60, video: grant });
 }
 function listAdminToken() { return adminToken({ roomList: true }); }
+function createAdminToken() { return adminToken({ roomCreate: true }); }
 function roomAdminToken(room) { return adminToken({ room, roomAdmin: true }); }
 
 function safeRoom(value) {
@@ -116,7 +126,8 @@ function getRoomConfig(room, create = false, requestedPreset = "livre") {
       pinSalt: "", pinHash: "",
       preset: PRESETS.has(requestedPreset) ? requestedPreset : "livre",
       presenter: null,
-      permissions: new Map()
+      permissions: new Map(),
+      voteKicks: new Map()
     };
     roomConfigs.set(room, config);
   }
@@ -157,6 +168,7 @@ function cleanupEphemeral() {
     }
   }
   for (const [room, config] of roomConfigs) {
+    cleanupVoteKicks(config.voteKicks || new Map(), now);
     if (now - config.touchedAt > ROOM_STATE_TTL_MS) roomConfigs.delete(room);
   }
 }
@@ -217,14 +229,61 @@ function listRooms() {
   }).catch((error) => { roomCache.promise = null; throw error; });
   return roomCache.promise;
 }
-async function canEnter(room) {
+let admissionQueue = Promise.resolve();
+function serializedAdmission(task) {
+  const operation = admissionQueue.then(task, task);
+  admissionQueue = operation.catch(() => {});
+  return operation;
+}
+function roomCapacity(room) {
+  const current = Number(room?.num_participants ?? room?.numParticipants ?? 0);
+  const configured = Number(room?.max_participants ?? room?.maxParticipants ?? 0);
+  const maximum = configured > 0 ? configured : MAX_PARTICIPANTS_PER_ROOM;
+  return { current, maximum, available: current < maximum };
+}
+async function ensureRoomAdmission(roomName) {
   try {
-    const rooms = await listRooms();
-    const exists = rooms.some((item) => item.name === room);
-    return exists || rooms.length < MAX_ROOMS;
-  } catch (e) {
-    console.warn("Nao consegui checar limite (deixando entrar):", e.message);
-    return true;
+    const cachedRooms = await listRooms();
+    const cached = cachedRooms.find((item) => item.name === roomName);
+    if (cached) {
+      const capacity = roomCapacity(cached);
+      return capacity.available
+        ? { allowed: true, existing: true, capacity }
+        : { allowed: false, status: 429, reason: "room-full", capacity };
+    }
+
+    return serializedAdmission(async () => {
+      const now = Date.now();
+      const rooms = roomCache.data && now - roomCache.at < ROOM_CACHE_MS
+        ? roomCache.data
+        : await listRoomsReal();
+      const existing = rooms.find((item) => item.name === roomName);
+      if (existing) {
+        const capacity = roomCapacity(existing);
+        return capacity.available
+          ? { allowed: true, existing: true, capacity }
+          : { allowed: false, status: 429, reason: "room-full", capacity };
+      }
+      if (rooms.length >= MAX_ROOMS) {
+        return { allowed: false, status: 429, reason: "server-full" };
+      }
+
+      const created = await twirp("CreateRoom", createAdminToken(), {
+        name: roomName,
+        empty_timeout: 300,
+        departure_timeout: 20,
+        max_participants: MAX_PARTICIPANTS_PER_ROOM
+      });
+      roomCache = { at: Date.now(), data: rooms.concat([created]), promise: null };
+      return {
+        allowed: true,
+        existing: false,
+        capacity: { current: 0, maximum: MAX_PARTICIPANTS_PER_ROOM, available: true }
+      };
+    });
+  } catch (error) {
+    console.warn("Nao consegui preparar a sala:", error.message);
+    return { allowed: false, status: 503, reason: "livekit-unavailable" };
   }
 }
 
@@ -235,38 +294,6 @@ function tokenAllowed() {
   tokenWindow.count += 1;
   return tokenWindow.count <= TOKENS_POR_SEG;
 }
-
-const ALERTA_WEBHOOK = process.env.ALERTA_WEBHOOK || "";
-const ALERTA_MBPS = parseInt(process.env.ALERTA_MBPS || "250", 10);
-const BITRATE_MBPS = parseFloat(process.env.BITRATE_MBPS || "6");
-let ultimoAlerta = 0;
-function avisarDiscord(texto) {
-  let url; try { url = new URL(ALERTA_WEBHOOK); } catch (e) { return; }
-  const body = JSON.stringify({ content: texto });
-  const request = https.request({ hostname: url.hostname, path: url.pathname + url.search, method: "POST",
-    headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) } }, (r) => r.resume());
-  request.on("error", () => {});
-  request.setTimeout(4000, () => request.destroy());
-  request.write(body); request.end();
-}
-async function vigiaBanda() {
-  try {
-    const rooms = await listRoomsReal();
-    let mbps = 0, people = 0, publishers = 0;
-    rooms.forEach((room) => {
-      const participants = room.num_participants || 0;
-      const pubs = room.num_publishers || 0;
-      people += participants; publishers += pubs;
-      mbps += pubs * Math.max(0, participants - 1) * BITRATE_MBPS;
-    });
-    if (mbps >= ALERTA_MBPS && Date.now() - ultimoAlerta > 10 * 60 * 1000) {
-      ultimoAlerta = Date.now();
-      avisarDiscord("[ALERTA] Mazestream puxando ~" + Math.round(mbps) + " Mbps agora ("
-        + rooms.length + " salas, " + people + " pessoas, " + publishers + " transmissoes). O servidor e' o mesmo do RPG, fica de olho.");
-    }
-  } catch (e) {}
-}
-if (ALERTA_WEBHOOK && API_URL) setInterval(vigiaBanda, 30000).unref();
 
 function json(res, code, value) {
   res.writeHead(code, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
@@ -283,6 +310,7 @@ function readBody(req, maxBytes) {
       if (size > maxBytes) {
         tooLarge = true;
         chunks.length = 0;
+        req.resume();
         reject(Object.assign(new Error("corpo grande"), { statusCode: 413 }));
         return;
       }
@@ -297,12 +325,52 @@ async function readJson(req, maxBytes = 64 * 1024) {
   if (!body.length) return {};
   return JSON.parse(body.toString("utf8"));
 }
-function serveFile(res, filePath) {
-  fs.readFile(filePath, (err, buffer) => {
-    if (err) { res.writeHead(404); res.end("nao encontrado"); return; }
-    res.writeHead(200, { "Content-Type": TYPES[path.extname(filePath).toLowerCase()] || "application/octet-stream" });
-    res.end(buffer);
+function acceptsEncoding(header, encoding) {
+  return String(header || "").toLowerCase().split(",").some((part) => {
+    const [name, ...parameters] = part.trim().split(";");
+    if (name !== encoding && name !== "*") return false;
+    const quality = parameters.find((parameter) => parameter.trim().startsWith("q="));
+    return !quality || Number.parseFloat(quality.split("=")[1]) > 0;
   });
+}
+function serveFile(req, res, filePath) {
+  const extension = path.extname(filePath).toLowerCase();
+  const compressible = [".css", ".html", ".js", ".json", ".mjs", ".svg", ".webmanifest"].includes(extension);
+  const accepted = req.headers["accept-encoding"];
+  const candidates = compressible
+    ? [
+        acceptsEncoding(accepted, "br") && { path: filePath + ".br", encoding: "br" },
+        acceptsEncoding(accepted, "gzip") && { path: filePath + ".gz", encoding: "gzip" }
+      ].filter(Boolean)
+    : [];
+  candidates.push({ path: filePath, encoding: "" });
+
+  const readCandidate = (index) => {
+    const candidate = candidates[index];
+    fs.readFile(candidate.path, (err, buffer) => {
+      if (err && index + 1 < candidates.length) { readCandidate(index + 1); return; }
+      if (err) { res.writeHead(404); res.end("nao encontrado"); return; }
+
+      const basename = path.basename(filePath);
+      const immutable = filePath.includes(path.sep + "assets" + path.sep)
+        && /-[A-Za-z0-9_-]{8,}\.[^.]+$/.test(basename);
+      const cacheControl = extension === ".html" || basename === "sw.js" || basename === "build-info.json" || extension === ".webmanifest"
+        ? "no-cache"
+        : (immutable ? "public, max-age=31536000, immutable" : "public, max-age=86400");
+      const headers = {
+        "Content-Type": TYPES[extension] || "application/octet-stream",
+        "Content-Length": buffer.length,
+        "Cache-Control": cacheControl,
+        "X-Content-Type-Options": "nosniff"
+      };
+      if (compressible) headers.Vary = "Accept-Encoding";
+      if (candidate.encoding) headers["Content-Encoding"] = candidate.encoding;
+      res.writeHead(200, headers);
+      res.end(req.method === "HEAD" ? undefined : buffer);
+    });
+  };
+
+  readCandidate(0);
 }
 function effectiveWss(req) {
   if (WSS_URL) return WSS_URL;
@@ -322,20 +390,37 @@ async function handleToken(req, res, url) {
   const requestedPin = String(req.headers["x-maze-pin"] || url.searchParams.get("pin") || "").slice(0, 24);
   const hostClaim = String(req.headers["x-maze-host-claim"] || url.searchParams.get("hostClaim") || "").slice(0, 80);
 
-  if (!(await canEnter(room))) {
-    json(res, 429, { error: "limite", motivo: "Servidor cheio: ja tem " + MAX_ROOMS + " salas abertas. Espere uma esvaziar ou entre numa sala que ja existe." });
-    return;
-  }
-
   let config = getRoomConfig(room, false);
-  const newRoomState = !config;
-  if (!config) config = getRoomConfig(room, true, requestedPreset);
-
-  const validHostClaim = !newRoomState && !!hostClaim && hostClaim === config.hostClaim;
-  if (!newRoomState && !validHostClaim && !checkPin(config, requestedPin)) {
+  let validHostClaim = !!config && !!hostClaim && hostClaim === config.hostClaim;
+  if (config && !validHostClaim && !checkPin(config, requestedPin)) {
     json(res, 403, { error: "pin", motivo: requestedPin ? "PIN incorreto." : "Esta sala está bloqueada. Informe o PIN." });
     return;
   }
+
+  const admission = await ensureRoomAdmission(room);
+  if (!admission.allowed) {
+    if (admission.reason === "room-full") {
+      json(res, admission.status, { error: "limite", motivo: "Esta sala atingiu o limite de " + admission.capacity.maximum + " pessoas. Espere alguém sair." });
+    } else if (admission.reason === "server-full") {
+      json(res, admission.status, { error: "limite", motivo: "Servidor cheio: já existem " + MAX_ROOMS + " salas abertas. Espere uma esvaziar ou entre numa sala existente." });
+    } else {
+      json(res, admission.status, { error: "livekit", motivo: "Não consegui confirmar a capacidade do servidor agora. Tente novamente em instantes." });
+    }
+    return;
+  }
+
+  // Another first entrant may have initialized the in-memory room state while
+  // this request was waiting on LiveKit. Re-read it and enforce its PIN before
+  // deciding who receives the host claim; otherwise two concurrent requests
+  // could both become host or bypass a PIN set by the first request.
+  config = getRoomConfig(room, false);
+  validHostClaim = !!config && !!hostClaim && hostClaim === config.hostClaim;
+  if (config && !validHostClaim && !checkPin(config, requestedPin)) {
+    json(res, 403, { error: "pin", motivo: requestedPin ? "PIN incorreto." : "Esta sala está bloqueada. Informe o PIN." });
+    return;
+  }
+  const newRoomState = !config;
+  if (!config) config = getRoomConfig(room, true, requestedPreset);
 
   const identity = safeIdentityBase(name) + "-" + crypto.randomBytes(3).toString("hex");
   let isHost = false;
@@ -360,6 +445,7 @@ async function handleToken(req, res, url) {
 
   json(res, 200, {
     token: entryToken(identity, name, room, { canPublish, canPublishData }),
+    room,
     url: effectiveWss(req),
     identity,
     session,
@@ -374,12 +460,104 @@ async function handleRoomControl(req, res) {
   if (req.method !== "POST") { res.writeHead(405); res.end("metodo"); return; }
   const session = getSession(req);
   if (!session) { json(res, 401, { error: "session", motivo: "Sessão expirada. Entre na sala novamente." }); return; }
-  if (!session.isHost) { json(res, 403, { error: "host", motivo: "Só o host pode fazer isso." }); return; }
   const config = getRoomConfig(session.room, false);
   if (!config) { json(res, 404, { error: "room" }); return; }
 
-  const body = await readJson(req);
+  let body;
+  try { body = await readJson(req); }
+  catch (e) {
+    json(res, e.statusCode || 400, { error: "json", motivo: e.statusCode === 413 ? "Pedido grande demais." : "Pedido inválido." });
+    return;
+  }
+
   const action = String(body.action || "");
+
+  if (action === "vote-kick") {
+    const voteNow = Date.now();
+    if ((session.voteKickReadyAt || 0) > voteNow) {
+      json(res, 429, { error: "vote-rate", motivo: "Espere um instante antes de votar novamente." });
+      return;
+    }
+    session.voteKickReadyAt = voteNow + 800;
+    const identity = String(body.identity || "").slice(0, 180);
+    if (!identity || identity === session.identity) {
+      json(res, 400, { error: "identity", motivo: "Escolha outra pessoa para a votação." });
+      return;
+    }
+    if (identity === config.hostIdentity) {
+      json(res, 403, { error: "host-target", motivo: "O host não pode ser alvo de votekick." });
+      return;
+    }
+
+    let participants;
+    try {
+      const result = await twirp("ListParticipants", roomAdminToken(session.room), { room: session.room });
+      participants = Array.isArray(result.participants) ? result.participants : [];
+    } catch (e) {
+      console.warn("Falha ao consultar participantes para votekick:", e.message);
+      json(res, 502, { error: "livekit", motivo: "Não consegui confirmar quem está na sala agora." });
+      return;
+    }
+
+    const voter = participants.find((participant) => participant.identity === session.identity);
+    const target = participants.find((participant) => participant.identity === identity);
+    if (!voter) {
+      json(res, 403, { error: "voter-absent", motivo: "Você precisa estar conectado à sala para votar." });
+      return;
+    }
+    if (!target) {
+      if (config.voteKicks) config.voteKicks.delete(identity);
+      json(res, 404, { error: "target-absent", motivo: "Essa pessoa já saiu da sala." });
+      return;
+    }
+    if (participants.length < 3) {
+      json(res, 409, { error: "few-participants", motivo: "O votekick precisa de pelo menos três pessoas na sala." });
+      return;
+    }
+
+    if (!config.voteKicks) config.voteKicks = new Map();
+    cleanupVoteKicks(config.voteKicks);
+    const vote = registerVote(config.voteKicks, {
+      targetIdentity: identity,
+      targetName: target.name || target.identity,
+      voterIdentity: session.identity,
+      participantCount: participants.length
+    });
+    config.touchedAt = Date.now();
+
+    if (vote.reached && !vote.state.removing) {
+      vote.state.removing = true;
+      try {
+        await twirp("RemoveParticipant", roomAdminToken(session.room), { room: session.room, identity });
+      } catch (e) {
+        vote.state.removing = false;
+        console.warn("Falha ao concluir votekick:", e.message);
+        json(res, 502, { error: "livekit", motivo: "A votação passou, mas o LiveKit não conseguiu remover a pessoa." });
+        return;
+      }
+      config.voteKicks.delete(identity);
+      json(res, 200, {
+        ok: true, kicked: true, votes: vote.votes, required: vote.required,
+        targetIdentity: identity, targetName: vote.state.targetName,
+        roomState: publicRoomState(config)
+      });
+      return;
+    }
+
+    json(res, 200, {
+      ok: true, kicked: false, pending: !!vote.state.removing, duplicate: vote.duplicate,
+      votes: vote.votes, required: vote.required, expiresAt: vote.state.expiresAt,
+      targetIdentity: identity, targetName: vote.state.targetName,
+      roomState: publicRoomState(config)
+    });
+    return;
+  }
+
+  if (!session.isHost || session.identity !== config.hostIdentity) {
+    json(res, 403, { error: "host", motivo: "Só o host atual pode fazer isso." });
+    return;
+  }
+
   if (action === "pin") {
     setPin(config, body.pin);
   } else if (action === "preset") {
@@ -426,6 +604,7 @@ async function handleRoomControl(req, res) {
       json(res, 502, { error: "livekit", motivo: "Não consegui remover esta pessoa." });
       return;
     }
+    if (config.voteKicks) config.voteKicks.delete(identity);
   } else {
     json(res, 400, { error: "action" });
     return;
@@ -461,6 +640,7 @@ async function handleShare(req, res, url) {
 }
 
 function handleSharedFile(req, res, id) {
+  if (req.method !== "GET" && req.method !== "HEAD") { res.writeHead(405); res.end("metodo"); return; }
   const file = sharedFiles.get(id);
   if (!file || file.expiresAt < Date.now()) {
     if (file) { sharedBytes -= file.buffer.length; sharedFiles.delete(id); }
@@ -475,7 +655,7 @@ function handleSharedFile(req, res, id) {
     "X-Content-Type-Options": "nosniff",
     "Content-Disposition": (inline ? "inline" : "attachment") + "; filename=\"" + asciiName.replace(/\"/g, "") + "\""
   });
-  res.end(file.buffer);
+  res.end(req.method === "HEAD" ? undefined : file.buffer);
 }
 
 async function handler(req, res) {
@@ -497,11 +677,18 @@ async function handler(req, res) {
   try { rel = path.normalize(decodeURIComponent(url.pathname)); }
   catch (e) { rel = "/index.html"; }
   rel = rel.replace(/^(\.\.[/\\])+/, "");
-  const filePath = path.join(DIST, rel);
-  if (!filePath.startsWith(DIST)) { res.writeHead(403); res.end("proibido"); return; }
+  const filePath = path.join(DIST, rel.replace(/^[/\\]+/, ""));
+  const relative = path.relative(DIST, filePath);
+  if (relative.startsWith(".." + path.sep) || path.isAbsolute(relative)) { res.writeHead(403); res.end("proibido"); return; }
   fs.stat(filePath, (err, stat) => {
-    if (!err && stat.isFile()) { serveFile(res, filePath); return; }
-    serveFile(res, path.join(DIST, "index.html"));
+    if (!err && stat.isFile()) { serveFile(req, res, filePath); return; }
+    const acceptsHtml = String(req.headers.accept || "").toLowerCase().includes("text/html");
+    if (acceptsHtml && (req.method === "GET" || req.method === "HEAD")) {
+      serveFile(req, res, path.join(DIST, "index.html"));
+      return;
+    }
+    res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
+    res.end("nao encontrado");
   });
 }
 
@@ -515,7 +702,7 @@ server.requestTimeout = 15000;
 server.headersTimeout = 8000;
 server.keepAliveTimeout = 8000;
 server.on("connection", (socket) => socket.setTimeout(20000, () => socket.destroy()));
-server.listen(PORT, "0.0.0.0", () => {
-  console.log("Mazestream na porta " + PORT + " | max salas: " + MAX_ROOMS + " | /token/s: " + TOKENS_POR_SEG
+server.listen(PORT, HOST, () => {
+  console.log("Mazestream na porta " + PORT + " | max salas: " + MAX_ROOMS + " | max pessoas/sala: " + MAX_PARTICIPANTS_PER_ROOM + " | /token/s: " + TOKENS_POR_SEG
     + " | upload temporario: " + SHARE_MAX_MB + " MB | API: " + (API_URL || "nao configurada"));
 });

@@ -6,32 +6,32 @@ const LIGHT = {
   primary: "#17171a",
   info: "#17171a",
   text: "#17171a",
-  bg: "#fbfbf9",
+  bg: "#fbfbf8",
   border: "#17171a",
-  borderSec: "#d7d6d1",
-  elevated: "#fbfbf9",
-  track: "#d7d6d1",
-  trackHover: "#c4c3bd",
-  tagBg: "#fbfbf9",
+  borderSec: "#cbc9c2",
+  elevated: "#fbfbf8",
+  track: "#cbc9c2",
+  trackHover: "#aaa9a3",
+  tagBg: "#ebeae5",
   input: "#ffffff",
-  inputBorder: "#c9c8c2",
-  ring: "rgba(23,23,26,.13)"
+  inputBorder: "#b9b8b2",
+  ring: "rgba(23,23,26,.14)"
 };
 
 const DARK = {
-  primary: "#e9e9ec",
-  info: "#e9e9ec",
-  text: "#e9e9ec",
-  bg: "#16181d",
-  border: "#3a3d45",
-  borderSec: "#2a2d33",
-  elevated: "#16181d",
+  primary: "#f1f1ee",
+  info: "#f1f1ee",
+  text: "#f1f1ee",
+  bg: "#15171c",
+  border: "#4b4e57",
+  borderSec: "#2c2f37",
+  elevated: "#15171c",
   track: "#3a3d45",
-  trackHover: "#4a4e57",
-  tagBg: "#1c1f25",
-  input: "#1e2129",
-  inputBorder: "#41454f",
-  ring: "rgba(233,233,236,.16)"
+  trackHover: "#4b4e57",
+  tagBg: "#1d2027",
+  input: "#1d2027",
+  inputBorder: "#4b4e57",
+  ring: "rgba(241,241,238,.16)"
 };
 
 export function createTheme(dark) {
@@ -45,12 +45,12 @@ export function createTheme(dark) {
       colorBgBase: c.bg,
       colorBorder: c.border,
       colorBorderSecondary: c.borderSec,
-      borderRadius: 2,
-      borderRadiusLG: 2,
+      borderRadius: 3,
+      borderRadiusLG: 6,
       borderRadiusSM: 2,
       wireframe: false,
       fontFamily: FONT,
-      controlHeight: 40,
+      controlHeight: 36,
       fontSize: 14
     },
     components: {
@@ -59,7 +59,7 @@ export function createTheme(dark) {
         defaultShadow: "none",
         dangerShadow: "none",
         fontWeight: 650,
-        controlHeight: 40
+        controlHeight: 36
       },
       Drawer: { colorBgElevated: c.elevated },
       Modal: { colorBgElevated: c.elevated },
@@ -77,9 +77,9 @@ export function createTheme(dark) {
         controlHeight: 38,
         colorBgContainer: c.input,
         colorBorder: c.inputBorder,
-        optionSelectedBg: dark ? "#2a2d33" : "#eeede8"
+        optionSelectedBg: dark ? "#2c2f37" : "#ebeae5"
       },
-      Segmented: dark ? { itemSelectedBg: "#2a2d33", trackBg: "#1c1f25" } : {},
+      Segmented: dark ? { itemSelectedBg: "#2c2f37", trackBg: "#1d2027" } : {},
       Slider: {
         railBg: c.track,
         railHoverBg: c.trackHover,

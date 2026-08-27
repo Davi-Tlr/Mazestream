@@ -1,7 +1,8 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { lazy, Suspense, useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { getVideoContentArea, toNormalizedVideoPoint } from "../interactions.js";
-import { REACTION_ICONS } from "./icons.jsx";
+import { getVideoContentArea, REACTION_EMOJIS, toNormalizedVideoPoint } from "../interactions.js";
+
+const DrawingCanvas = lazy(() => import("./DrawingCanvas.jsx"));
 
 function Marker({ item }) {
   const marker = item.marker || "ring";
@@ -24,6 +25,8 @@ export default function InteractionOverlay({
 }) {
   const color = (brush && brush.color) || "#ffffff";
   const width = (brush && brush.width) || 5;
+  const drawTool = (brush && brush.tool) || "pen";
+  const opacity = drawTool === "marker" ? 0.32 : 1;
   const [area, setArea] = useState(null);
   const strokeRef = useRef(null);
   const [liveStroke, setLiveStroke] = useState(null);
@@ -62,8 +65,9 @@ export default function InteractionOverlay({
     if (tool === "point") { onPing(point, markerStyle); return; }
     if (tool === "reaction") { if (pendingReaction) onReactionAt(point, pendingReaction); return; }
     if (!drawing) return;
-    strokeRef.current = [[point.x, point.y]];
-    setLiveStroke([[point.x, point.y]]);
+    const points = [[point.x, point.y]];
+    strokeRef.current = points;
+    setLiveStroke({ points, color, width, tool: drawTool, opacity });
   }
 
   function handleMove(event) {
@@ -81,11 +85,16 @@ export default function InteractionOverlay({
     }
     if (!drawing || !strokeRef.current) return;
     event.stopPropagation();
-    const points = strokeRef.current;
+    let points = strokeRef.current;
     const last = points[points.length - 1];
     if (Math.abs(point.x - last[0]) < 0.004 && Math.abs(point.y - last[1]) < 0.004) return;
-    points.push([point.x, point.y]);
-    setLiveStroke(points.slice());
+    if (["line", "arrow", "rectangle", "ellipse"].includes(drawTool)) {
+      points = [points[0], [point.x, point.y]];
+      strokeRef.current = points;
+    } else {
+      points.push([point.x, point.y]);
+    }
+    setLiveStroke({ points: points.slice(), color, width, tool: drawTool, opacity });
   }
 
   function handleUp(event) {
@@ -94,13 +103,12 @@ export default function InteractionOverlay({
     const points = strokeRef.current;
     strokeRef.current = null;
     setLiveStroke(null);
-    if (points.length > 1) onStroke(points, color, width);
+    if (points.length > 1) onStroke(points, color, width, drawTool, opacity);
   }
 
   if (!area) return null;
 
   const areaStyle = { position: "absolute", left: area.left, top: area.top, width: area.width, height: area.height };
-  const path = (points) => points.map((point, index) => (index ? "L" : "M") + (point[0] * 100).toFixed(2) + " " + (point[1] * 100).toFixed(2)).join(" ");
   const strokes = (items || []).filter((item) => item.type === "stroke");
   const pings = (items || []).filter((item) => item.type === "ping");
   const cursors = (items || []).filter((item) => item.type === "cursor");
@@ -109,17 +117,10 @@ export default function InteractionOverlay({
   return (
     <div className={"interaction-overlay" + (tool ? " active" : "")} style={areaStyle}
       onMouseDown={handleDown} onMouseMove={handleMove} onMouseUp={handleUp} onMouseLeave={handleUp}
-      onTouchStart={handleDown} onTouchMove={handleMove} onTouchEnd={handleUp}>
-      <svg className="interaction-svg" viewBox="0 0 100 100" preserveAspectRatio="none">
-        {strokes.map((stroke) => (
-          <path key={stroke.id} d={path(stroke.points)} fill="none" stroke={stroke.color || "#fff"}
-            strokeWidth={stroke.width || 5} strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
-        ))}
-        {liveStroke && liveStroke.length > 1 && (
-          <path d={path(liveStroke)} fill="none" stroke={color} strokeWidth={width}
-            strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
-        )}
-      </svg>
+      onTouchStart={handleDown} onTouchMove={handleMove} onTouchEnd={handleUp} onTouchCancel={handleUp}>
+      <Suspense fallback={null}>
+        <DrawingCanvas actions={strokes} liveAction={liveStroke} />
+      </Suspense>
 
       <AnimatePresence>{pings.map((ping) => <Marker key={ping.id} item={ping} />)}</AnimatePresence>
 
@@ -135,17 +136,17 @@ export default function InteractionOverlay({
 
       <AnimatePresence>
         {reactions.map((reaction) => {
-          const Icon = REACTION_ICONS[reaction.reaction];
-          if (!Icon) return null;
+          const emoji = REACTION_EMOJIS[reaction.reaction];
+          if (!emoji) return null;
           const duration = 2.8 + (reaction.speed || 0) * 1.6;
           const drift = (reaction.drift || 0) * 90;
           return (
             <motion.div key={reaction.id} className="interaction-reaction"
-              style={{ left: reaction.x * 100 + "%", top: reaction.y * 100 + "%", fontSize: 22 + (reaction.size || 0) * 16 }}
+              style={{ left: reaction.x * 100 + "%", top: reaction.y * 100 + "%", fontSize: 30 + (reaction.size || 0) * 20 }}
               initial={{ y: 0, x: 0, opacity: 0, scale: 0.4, rotate: 0 }}
-              animate={{ y: -220 - (reaction.speed || 0) * 90, x: [0, drift * 0.6, drift * -0.4, drift], opacity: [0, 1, 1, 0], scale: 1, rotate: (reaction.drift || 0) * 22 }}
+              animate={{ y: -220 - (reaction.speed || 0) * 90, x: [0, drift * 0.6, drift * -0.4, drift], opacity: [0, 1, 1, 0], scale: [0.4, 1.14, 1, 0.92], rotate: (reaction.drift || 0) * 22 }}
               exit={{ opacity: 0 }} transition={{ duration, ease: "easeOut" }}>
-              <Icon /><span className="interaction-author">{reaction.author}</span>
+              <span className="reaction-emoji">{emoji}</span>
             </motion.div>
           );
         })}

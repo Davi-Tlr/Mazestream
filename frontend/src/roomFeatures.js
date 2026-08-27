@@ -1,5 +1,12 @@
 export const ROOM_TOPIC = "maze-room";
 
+// Keep the client-side room key identical to the token server. This prevents
+// host claims and copied links from diverging when a user types spaces or
+// punctuation in a room name.
+export function normalizeRoomName(value) {
+  return String(value || "sala").replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 40) || "sala";
+}
+
 export const ROOM_PRESETS = {
   livre: {
     label: "Livre",

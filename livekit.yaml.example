@@ -2,12 +2,30 @@
 # livekit.yaml está no .gitignore e NUNCA deve ser commitado com chaves reais
 
 port: 7880
+prometheus_port: 6789
+
+room:
+  empty_timeout: 300
+  departure_timeout: 20
+  max_participants: 10
 
 rtc:
   tcp_port: 7881
   port_range_start: 50000
   port_range_end: 60000
   use_external_ip: true
+  # Mantém o SFU dentro da banda disponível e permite preservar as faixas mais
+  # importantes quando a rede fica severamente congestionada.
+  congestion_control:
+    enabled: true
+    allow_pause: true
+  # Cai automaticamente para ICE/TCP ou TURN/TLS quando UDP fica instável.
+  allow_tcp_fallback: true
+  # A v1.13.6 corrige a migracao experimental por perda sustentada, mas ela nao
+  # fica ativa neste perfil: acima do limiar de RTT o destino seria TURN/TLS,
+  # que deliberadamente nao e usado no modo Caddy deste projeto.
+  # tcp_fallback_rtt_threshold: 300
+  # allow_udp_unstable_fallback: true
 
 redis:
   address: localhost:6379

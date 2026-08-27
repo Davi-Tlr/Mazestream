@@ -1,0 +1,12 @@
+.git
+.github
+**/node_modules
+**/dist
+artifacts
+assets
+**/.env
+**/.env.*
+!frontend/.env.host-a1
+!frontend/.env.local-preview
+livekit.yaml
+**/*.log

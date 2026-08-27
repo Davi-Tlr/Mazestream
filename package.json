@@ -1,0 +1,26 @@
+{
+  "name": "mazestream",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Compartilhamento de tela e colaboração em tempo real com LiveKit.",
+  "workspaces": ["frontend", "discord-relay"],
+  "engines": { "node": "^22.14.0 || ^24.0.0", "npm": ">=10 <12" },
+  "devDependencies": { "yaml": "2.9.0" },
+  "scripts": {
+    "dev": "npm run dev:full --workspace=@mazestream/web",
+    "dev:ui": "npm run dev:local --workspace=@mazestream/web",
+    "dev:host": "npm run dev:host --workspace=@mazestream/web",
+    "local:up": "docker compose -p mazestream-local -f docker-compose.local.yaml up -d",
+    "local:down": "docker compose -p mazestream-local -f docker-compose.local.yaml down",
+    "build": "npm run build:host",
+    "build:local": "npm run build:local --workspace=@mazestream/web",
+    "build:host": "npm run build:host --workspace=@mazestream/web",
+    "check": "node scripts/check.mjs",
+    "test": "npm run test --workspaces && node --test scripts/release.test.mjs",
+    "verify": "npm run check && npm run build:local && npm test && npm run build:host && npm test",
+    "release:packages": "node scripts/package-release.mjs all",
+    "release:local": "node scripts/package-release.mjs local",
+    "release:selfhost": "node scripts/package-release.mjs selfhost",
+    "check:containers": "node scripts/check-containers.mjs"
+  }
+}

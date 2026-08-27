@@ -16,6 +16,14 @@
 #   --with-frontend         opcional. Sobe o frontend proprio (2 telas + painel de conexao).
 #   --use-caddy             preserva o Caddy existente e adiciona um dominio para o LiveKit.
 #   --skip-ssl              opcional. Nao tenta gerar certificado (util em re-runs).
+#   --discord-webhook URL   envia eventos e alertas automaticos ao Discord.
+#   --discord-app-id ID     Application ID para registrar o comando /banda.
+#   --discord-public-key K  Public Key usada para validar interacoes do Discord.
+#   --discord-bot-token T   Bot Token usado somente para registrar /banda.
+#   --discord-guild-id ID   opcional. Registra /banda imediatamente em uma guild.
+#   --alerta-mbps N         dispara alerta automatico acima deste Mbps (padrao A1: 120).
+#   --max-rooms N           limita salas simultaneas (padrao A1: 2).
+#   --max-participants N    limita pessoas por sala (padrao A1: 10).
 #
 # Idempotente: pode rodar de novo sem quebrar.
 
@@ -29,6 +37,16 @@ WITH_WEB=0
 USE_CADDY=0
 SKIP_SSL=0
 DISCORD_WEBHOOK=""
+DISCORD_APP_ID=""
+DISCORD_PUBLIC_KEY=""
+DISCORD_BOT_TOKEN=""
+DISCORD_GUILD_ID=""
+ALERTA_MBPS="120"
+ALERTA_MBPS_SET=0
+MAX_ROOMS_SETTING="2"
+MAX_ROOMS_SET=0
+MAX_PARTICIPANTS_SETTING="10"
+MAX_PARTICIPANTS_SET=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -39,6 +57,13 @@ while [ $# -gt 0 ]; do
     --use-caddy)       USE_CADDY=1; shift ;;
     --skip-ssl)        SKIP_SSL=1; shift ;;
     --discord-webhook) DISCORD_WEBHOOK="$2"; shift 2 ;;
+    --discord-app-id) DISCORD_APP_ID="$2"; shift 2 ;;
+    --discord-public-key) DISCORD_PUBLIC_KEY="$2"; shift 2 ;;
+    --discord-bot-token) DISCORD_BOT_TOKEN="$2"; shift 2 ;;
+    --discord-guild-id) DISCORD_GUILD_ID="$2"; shift 2 ;;
+    --alerta-mbps) ALERTA_MBPS="$2"; ALERTA_MBPS_SET=1; shift 2 ;;
+    --max-rooms) MAX_ROOMS_SETTING="$2"; MAX_ROOMS_SET=1; shift 2 ;;
+    --max-participants) MAX_PARTICIPANTS_SETTING="$2"; MAX_PARTICIPANTS_SET=1; shift 2 ;;
     *) echo "Flag desconhecida: $1"; exit 1 ;;
   esac
 done
@@ -60,6 +85,76 @@ WORKDIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$WORKDIR"
 echo ">> Diretorio: $WORKDIR"
 echo ">> Dominio:   $DOMAIN"
+
+# Em reexecucoes, preserva a integracao Discord se as flags nao forem repetidas.
+env_value() {
+  [ -f .env ] || return 0
+  sed -n "s/^$1=//p" .env | tail -1
+}
+[ -z "$DISCORD_WEBHOOK" ] && DISCORD_WEBHOOK="$(env_value DISCORD_WEBHOOK_URL)"
+[ -z "$DISCORD_APP_ID" ] && DISCORD_APP_ID="$(env_value DISCORD_APPLICATION_ID)"
+[ -z "$DISCORD_PUBLIC_KEY" ] && DISCORD_PUBLIC_KEY="$(env_value DISCORD_PUBLIC_KEY)"
+[ -z "$DISCORD_BOT_TOKEN" ] && DISCORD_BOT_TOKEN="$(env_value DISCORD_BOT_TOKEN)"
+[ -z "$DISCORD_GUILD_ID" ] && DISCORD_GUILD_ID="$(env_value DISCORD_GUILD_ID)"
+SAVED_ALERTA_MBPS="$(env_value ALERTA_MBPS)"
+[ "$ALERTA_MBPS_SET" -eq 0 ] && [ -n "$SAVED_ALERTA_MBPS" ] && ALERTA_MBPS="$SAVED_ALERTA_MBPS"
+SAVED_MAX_ROOMS="$(env_value MAX_ROOMS)"
+[ "$MAX_ROOMS_SET" -eq 0 ] && [ -n "$SAVED_MAX_ROOMS" ] && MAX_ROOMS_SETTING="$SAVED_MAX_ROOMS"
+SAVED_MAX_PARTICIPANTS="$(env_value MAX_PARTICIPANTS_PER_ROOM)"
+[ "$MAX_PARTICIPANTS_SET" -eq 0 ] && [ -n "$SAVED_MAX_PARTICIPANTS" ] && MAX_PARTICIPANTS_SETTING="$SAVED_MAX_PARTICIPANTS"
+LIVEKIT_SERVER_IMAGE="$(env_value LIVEKIT_SERVER_IMAGE)"
+[ -z "$LIVEKIT_SERVER_IMAGE" ] && LIVEKIT_SERVER_IMAGE="livekit/livekit-server:v1.13.6"
+MAZESTREAM_LIVEKIT_CPUS="$(env_value MAZESTREAM_LIVEKIT_CPUS)"
+[ -z "$MAZESTREAM_LIVEKIT_CPUS" ] && MAZESTREAM_LIVEKIT_CPUS="1.25"
+MAZESTREAM_LIVEKIT_MEMORY="$(env_value MAZESTREAM_LIVEKIT_MEMORY)"
+[ -z "$MAZESTREAM_LIVEKIT_MEMORY" ] && MAZESTREAM_LIVEKIT_MEMORY="1536m"
+MAZESTREAM_REDIS_CPUS="$(env_value MAZESTREAM_REDIS_CPUS)"
+[ -z "$MAZESTREAM_REDIS_CPUS" ] && MAZESTREAM_REDIS_CPUS="0.10"
+MAZESTREAM_REDIS_MEMORY="$(env_value MAZESTREAM_REDIS_MEMORY)"
+[ -z "$MAZESTREAM_REDIS_MEMORY" ] && MAZESTREAM_REDIS_MEMORY="192m"
+MAZESTREAM_FRONTEND_CPUS="$(env_value MAZESTREAM_FRONTEND_CPUS)"
+[ -z "$MAZESTREAM_FRONTEND_CPUS" ] && MAZESTREAM_FRONTEND_CPUS="0.20"
+MAZESTREAM_FRONTEND_MEMORY="$(env_value MAZESTREAM_FRONTEND_MEMORY)"
+[ -z "$MAZESTREAM_FRONTEND_MEMORY" ] && MAZESTREAM_FRONTEND_MEMORY="256m"
+MAZESTREAM_DISCORD_CPUS="$(env_value MAZESTREAM_DISCORD_CPUS)"
+[ -z "$MAZESTREAM_DISCORD_CPUS" ] && MAZESTREAM_DISCORD_CPUS="0.05"
+MAZESTREAM_DISCORD_MEMORY="$(env_value MAZESTREAM_DISCORD_MEMORY)"
+[ -z "$MAZESTREAM_DISCORD_MEMORY" ] && MAZESTREAM_DISCORD_MEMORY="128m"
+DISCORD_ENABLED=0
+if [ -n "$DISCORD_WEBHOOK" ] || [ -n "$DISCORD_APP_ID" ]; then
+  DISCORD_ENABLED=1
+fi
+
+if ! printf '%s' "$ALERTA_MBPS" | grep -Eq '^[0-9]+([.][0-9]+)?$'; then
+  echo "Valor invalido para --alerta-mbps: $ALERTA_MBPS"
+  exit 1
+fi
+if ! printf '%s' "$MAX_ROOMS_SETTING" | grep -Eq '^[1-9][0-9]*$' || [ "$MAX_ROOMS_SETTING" -gt 1000 ]; then
+  echo "Valor invalido para --max-rooms: $MAX_ROOMS_SETTING"
+  exit 1
+fi
+if ! printf '%s' "$MAX_PARTICIPANTS_SETTING" | grep -Eq '^([2-9]|[1-9][0-9]+)$' || [ "$MAX_PARTICIPANTS_SETTING" -gt 100 ]; then
+  echo "Valor invalido para --max-participants: $MAX_PARTICIPANTS_SETTING"
+  exit 1
+fi
+if [ -n "$DISCORD_PUBLIC_KEY" ] && ! printf '%s' "$DISCORD_PUBLIC_KEY" | grep -Eq '^[A-Fa-f0-9]{64}$'; then
+  echo "Discord Public Key invalida: esperado hexadecimal com 64 caracteres."
+  exit 1
+fi
+if [ -n "$DISCORD_APP_ID" ] && ! printf '%s' "$DISCORD_APP_ID" | grep -Eq '^[0-9]+$'; then
+  echo "Discord Application ID invalido."
+  exit 1
+fi
+if [ -n "$DISCORD_GUILD_ID" ] && ! printf '%s' "$DISCORD_GUILD_ID" | grep -Eq '^[0-9]+$'; then
+  echo "Discord Guild ID invalido."
+  exit 1
+fi
+if [ -n "$DISCORD_APP_ID$DISCORD_PUBLIC_KEY$DISCORD_BOT_TOKEN$DISCORD_GUILD_ID" ]; then
+  if [ -z "$DISCORD_APP_ID" ] || [ -z "$DISCORD_PUBLIC_KEY" ] || [ -z "$DISCORD_BOT_TOKEN" ]; then
+    echo "Configuracao incompleta do Discord App: informe App ID, Public Key e Bot Token juntos."
+    exit 1
+  fi
+fi
 
 if ! printf '%s' "$DOMAIN" | grep -Eq '^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$'; then
   echo "Dominio invalido: $DOMAIN"
@@ -101,11 +196,12 @@ if [ ! -f .env ]; then
   }
 
   require_free_port tcp 6379 Redis
+  require_free_port tcp 6789 LiveKit-Metrics
   require_free_port tcp 7880 LiveKit-API
   require_free_port tcp 7881 LiveKit-RTC
   require_free_port udp 3478 TURN
   [ "$WITH_WEB" -eq 1 ] && require_free_port tcp 3000 frontend
-  [ -n "$DISCORD_WEBHOOK" ] && require_free_port tcp 8080 Discord-relay
+  [ "$DISCORD_ENABLED" -eq 1 ] && require_free_port tcp 8080 Discord-relay
   if [ "$USE_CADDY" -eq 0 ]; then
     require_free_port tcp 80 Certbot-Nginx
     require_free_port tcp 443 Nginx
@@ -136,6 +232,7 @@ else
   apt-get install -y docker-compose
   COMPOSE="docker-compose"
 fi
+COMPOSE_HOST="$COMPOSE -f docker-compose.yaml -f docker-compose.host-a1.yaml"
 echo ">> Compose: $COMPOSE"
 
 # ---------- 2. DuckDNS (opcional) ----------
@@ -233,12 +330,22 @@ fi
 cat > livekit.yaml <<EOF
 # Gerado por deploy.sh. Nao commite (esta no .gitignore).
 port: 7880
+prometheus_port: 6789
+
+room:
+  empty_timeout: 300
+  departure_timeout: 20
+  max_participants: $MAX_PARTICIPANTS_SETTING
 
 rtc:
   tcp_port: 7881
   port_range_start: 50000
   port_range_end: 60000
   use_external_ip: true
+  congestion_control:
+    enabled: true
+    allow_pause: true
+  allow_tcp_fallback: true
 
 redis:
   address: localhost:6379
@@ -264,8 +371,30 @@ echo ">> livekit.yaml escrito."
 cat > .env <<EOF
 LIVEKIT_API_KEY=$API_KEY
 LIVEKIT_API_SECRET=$API_SECRET
+LIVEKIT_SERVER_IMAGE=$LIVEKIT_SERVER_IMAGE
+MAZESTREAM_BUILD_PROFILE=host
+MAZESTREAM_LIVEKIT_CPUS=$MAZESTREAM_LIVEKIT_CPUS
+MAZESTREAM_LIVEKIT_MEMORY=$MAZESTREAM_LIVEKIT_MEMORY
+MAZESTREAM_REDIS_CPUS=$MAZESTREAM_REDIS_CPUS
+MAZESTREAM_REDIS_MEMORY=$MAZESTREAM_REDIS_MEMORY
+MAZESTREAM_FRONTEND_CPUS=$MAZESTREAM_FRONTEND_CPUS
+MAZESTREAM_FRONTEND_MEMORY=$MAZESTREAM_FRONTEND_MEMORY
+MAZESTREAM_DISCORD_CPUS=$MAZESTREAM_DISCORD_CPUS
+MAZESTREAM_DISCORD_MEMORY=$MAZESTREAM_DISCORD_MEMORY
 PUBLIC_WSS_URL=wss://$DOMAIN
+LIVEKIT_API_URL=http://host.docker.internal:7880
+LIVEKIT_METRICS_URL=http://host.docker.internal:6789/metrics
 DISCORD_WEBHOOK_URL=$DISCORD_WEBHOOK
+DISCORD_APPLICATION_ID=$DISCORD_APP_ID
+DISCORD_PUBLIC_KEY=$DISCORD_PUBLIC_KEY
+DISCORD_BOT_TOKEN=$DISCORD_BOT_TOKEN
+DISCORD_GUILD_ID=$DISCORD_GUILD_ID
+ALERTA_MBPS=$ALERTA_MBPS
+BANDWIDTH_INTERVAL_SECONDS=30
+BANDWIDTH_ALERT_COOLDOWN_MINUTES=10
+MAX_ROOMS=$MAX_ROOMS_SETTING
+MAX_PARTICIPANTS_PER_ROOM=$MAX_PARTICIPANTS_SETTING
+TOKENS_POR_SEG=20
 PUBLIC_URL=https://$DOMAIN
 EOF
 chmod 600 .env
@@ -293,11 +422,22 @@ server {
 
     ssl_certificate     $CERT_DIR/fullchain.pem;
     ssl_certificate_key $CERT_DIR/privkey.pem;
+    gzip on;
+    gzip_vary on;
+    gzip_min_length 1024;
+    gzip_types text/css text/javascript application/javascript application/json application/manifest+json image/svg+xml;
 
     # Sinalizacao do LiveKit (WebSocket e APIs)
-    location /rtc      { proxy_pass http://127.0.0.1:7880; proxy_http_version 1.1; proxy_set_header Upgrade \$http_upgrade; proxy_set_header Connection "Upgrade"; proxy_set_header Host \$host; }
+    location /rtc      { proxy_pass http://127.0.0.1:7880; proxy_http_version 1.1; proxy_set_header Upgrade \$http_upgrade; proxy_set_header Connection "Upgrade"; proxy_set_header Host \$host; proxy_buffering off; proxy_read_timeout 3600s; proxy_send_timeout 3600s; }
     location /twirp    { proxy_pass http://127.0.0.1:7880; proxy_set_header Host \$host; }
     location /validate { proxy_pass http://127.0.0.1:7880; proxy_set_header Host \$host; }
+
+    # Interacoes assinadas do Discord (/banda)
+    location = /discord/interactions {
+        proxy_pass http://127.0.0.1:8080/discord/interactions;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+    }
 
     # Raiz: frontend ou pagina de status
     location / {
@@ -319,10 +459,10 @@ fi
 echo ">> Subindo containers..."
 PROFILES=""
 [ "$WITH_WEB" -eq 1 ] && PROFILES="$PROFILES --profile web"
-[ -n "$DISCORD_WEBHOOK" ] && PROFILES="$PROFILES --profile discord"
-$COMPOSE $PROFILES up -d --build
+[ "$DISCORD_ENABLED" -eq 1 ] && PROFILES="$PROFILES --profile discord"
+$COMPOSE_HOST $PROFILES up -d --build
 sleep 4
-$COMPOSE $PROFILES ps
+$COMPOSE_HOST $PROFILES ps
 
 # ---------- 9. Caddy existente (modo compativel com o Foundry) ----------
 if [ "$USE_CADDY" -eq 1 ]; then
@@ -347,6 +487,17 @@ if [ "$USE_CADDY" -eq 1 ]; then
   fi
 
   printf '\n%s\n%s {\n' "$LIVEKIT_MARKER_START" "$DOMAIN" >> "$CADDYFILE"
+  cat >> "$CADDYFILE" <<'EOF'
+    encode zstd gzip
+EOF
+  if [ "$DISCORD_ENABLED" -eq 1 ]; then
+    cat >> "$CADDYFILE" <<'EOF'
+    @discord_interactions path /discord/interactions
+    handle @discord_interactions {
+        reverse_proxy 127.0.0.1:8080
+    }
+EOF
+  fi
   cat >> "$CADDYFILE" <<'EOF'
     @livekit path /rtc* /twirp* /validate*
     handle @livekit {
@@ -398,7 +549,14 @@ else
   echo "   LiveKit URL: wss://$DOMAIN"
   echo "   API Key/Secret: acima"
 fi
-[ -n "$DISCORD_WEBHOOK" ] && echo " Relay do Discord ligado: avisos de sala/transmissao vao cair no seu canal."
+if [ "$DISCORD_ENABLED" -eq 1 ]; then
+  echo " Relay do Discord ligado: eventos e alertas automaticos de banda estao ativos."
+  if [ -n "$DISCORD_APP_ID" ] && [ -n "$DISCORD_PUBLIC_KEY" ] && [ -n "$DISCORD_BOT_TOKEN" ]; then
+    echo " Comando /banda configurado. Interactions Endpoint: https://$DOMAIN/discord/interactions"
+  else
+    echo " Para ativar /banda, rode novamente com App ID, Public Key e Bot Token do Discord."
+  fi
+fi
 if [ "$USE_CADDY" -eq 1 ]; then
   echo " Caddy preservado: Foundry e LiveKit usam dominios diferentes no mesmo IP."
   echo " TURN/UDP ativo em 3478. TURN/TLS nao e ativado neste modo para nao disputar a porta 443 com o Caddy."

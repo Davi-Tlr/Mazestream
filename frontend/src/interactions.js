@@ -7,8 +7,26 @@ export function encodeInteraction(value) {
   return new TextEncoder().encode(JSON.stringify(value));
 }
 
+export function encodeInteractionForTransport(value, targetBytes = 12 * 1024) {
+  let encoded = encodeInteraction(value);
+  if (encoded.byteLength <= targetBytes) return encoded;
+
+  // Old clients used `pts`; current clients accept `points` and `pts`. Keep the
+  // alias for ordinary strokes, but remove the duplicate array when a long
+  // stroke would otherwise exceed LiveKit's practical data-packet budget.
+  if (value && Array.isArray(value.points) && Array.isArray(value.pts)) {
+    const compact = { ...value };
+    delete compact.pts;
+    encoded = encodeInteraction(compact);
+  }
+  return encoded;
+}
+
 export function decodeInteraction(payload) {
-  try { return JSON.parse(new TextDecoder().decode(payload)); }
+  try {
+    if (!payload || Number(payload.byteLength || payload.length || 0) > 64 * 1024) return null;
+    return JSON.parse(new TextDecoder().decode(payload));
+  }
   catch (e) { return null; }
 }
 
@@ -37,13 +55,44 @@ export function toNormalizedVideoPoint(video, clientX, clientY) {
   return { x, y };
 }
 
-export const DRAW_COLORS = ["#ffffff", "#111111", "#e0342a", "#f0b429", "#37b26a", "#3b82f6"];
-export const DRAW_WIDTHS = [2, 5, 11];
-export const INTERACTION_LIFETIME = { ping: 4200, stroke: 6000, reaction: 3600, cursor: 1400 };
+export const DRAW_COLORS = [
+  "#ffffff", "#111111", "#ef4444", "#f97316", "#facc15",
+  "#22c55e", "#06b6d4", "#3b82f6", "#8b5cf6", "#ec4899"
+];
+export const DRAW_WIDTHS = [2, 4, 7, 12, 20];
+export const DRAW_TOOLS = ["pen", "marker", "line", "arrow", "rectangle", "ellipse", "eraser"];
+export const DRAW_TOOL_LABELS = {
+  pen: "Caneta",
+  marker: "Marca-texto",
+  line: "Linha",
+  arrow: "Seta",
+  rectangle: "Retângulo",
+  ellipse: "Elipse",
+  eraser: "Borracha"
+};
+export const STREAM_DRAWING_TTL_MS = 10000;
+export const INTERACTION_LIFETIME = { ping: 4200, stroke: STREAM_DRAWING_TTL_MS, reaction: 4800, cursor: 1400 };
 export const MARKER_STYLES = ["ring", "arrow", "1", "2", "3"];
 
-export const REACTION_TO_WIRE = { heart: "coracao", flame: "chama", bolt: "raio", star: "estrela" };
-export const REACTION_FROM_WIRE = { coracao: "heart", chama: "flame", raio: "bolt", estrela: "star" };
+export const REACTION_EMOJIS = {
+  heart: "❤️",
+  laugh: "😂",
+  wow: "😮",
+  fire: "🔥",
+  clap: "👏",
+  thumbsUp: "👍",
+  party: "🎉",
+  skull: "💀"
+};
+export const REACTION_TO_WIRE = {
+  heart: "coracao", laugh: "risada", wow: "uau", fire: "chama",
+  clap: "palmas", thumbsUp: "joinha", party: "festa", skull: "caveira"
+};
+export const REACTION_FROM_WIRE = {
+  coracao: "heart", risada: "laugh", uau: "wow", chama: "fire",
+  palmas: "clap", joinha: "thumbsUp", festa: "party", caveira: "skull",
+  flame: "fire", bolt: "wow", star: "party", raio: "wow", estrela: "party"
+};
 
 export const LEGACY_TYPE_MAP = {
   ping: "ping",
@@ -59,7 +108,7 @@ export function newInteractionId() {
   return Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
 }
 
-export function sanitizePoints(points, max = 300) {
+export function sanitizePoints(points, max = 600) {
   if (!Array.isArray(points)) return [];
   return points.slice(0, max).map((point) => {
     if (!Array.isArray(point) || point.length < 2) return null;
@@ -73,9 +122,32 @@ export function sanitizePoints(points, max = 300) {
 }
 
 export function sanitizeColor(color) {
-  return DRAW_COLORS.includes(color) ? color : DRAW_COLORS[0];
+  const value = String(color || "").trim().toLowerCase();
+  return /^#[0-9a-f]{6}$/.test(value) ? value : DRAW_COLORS[0];
 }
 
 export function sanitizeWidth(width) {
   return DRAW_WIDTHS.includes(width) ? width : DRAW_WIDTHS[1];
+}
+
+export function sanitizeDrawTool(tool) {
+  return DRAW_TOOLS.includes(tool) ? tool : "pen";
+}
+
+export function sanitizeOpacity(opacity, tool = "pen") {
+  const fallback = tool === "marker" ? 0.32 : 1;
+  const value = Number(opacity);
+  return Number.isFinite(value) ? Math.max(0.12, Math.min(1, value)) : fallback;
+}
+
+export function sanitizeDrawAction(value) {
+  const tool = sanitizeDrawTool(value && value.tool);
+  return {
+    id: String((value && value.id) || newInteractionId()).slice(0, 80),
+    points: sanitizePoints(value && (value.points || value.pts)),
+    color: sanitizeColor(value && (value.color || value.cor)),
+    width: sanitizeWidth(Number(value && (value.width ?? value.espessura))),
+    tool,
+    opacity: sanitizeOpacity(value && value.opacity, tool)
+  };
 }

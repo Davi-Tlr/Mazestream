@@ -1,0 +1,22 @@
+# Limites conservadores para o Oracle A1 de 2 CPUs / 12 GB compartilhado.
+# Use junto do docker-compose.yaml; este arquivo nao duplica servicos nem codigo.
+services:
+  livekit:
+    cpus: ${MAZESTREAM_LIVEKIT_CPUS:-1.25}
+    mem_limit: ${MAZESTREAM_LIVEKIT_MEMORY:-1536m}
+    pids_limit: 256
+
+  redis:
+    cpus: ${MAZESTREAM_REDIS_CPUS:-0.10}
+    mem_limit: ${MAZESTREAM_REDIS_MEMORY:-192m}
+    pids_limit: 96
+
+  frontend:
+    cpus: ${MAZESTREAM_FRONTEND_CPUS:-0.20}
+    mem_limit: ${MAZESTREAM_FRONTEND_MEMORY:-256m}
+    pids_limit: 128
+
+  discord-relay:
+    cpus: ${MAZESTREAM_DISCORD_CPUS:-0.05}
+    mem_limit: ${MAZESTREAM_DISCORD_MEMORY:-128m}
+    pids_limit: 96
