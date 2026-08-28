@@ -37,7 +37,7 @@ export function listFiles(base, relative = "") {
   }).sort();
 }
 
-export function validatePackage(directory, profile) {
+export function validatePackage(directory, profile, expectedVersion) {
   const files = listFiles(directory);
   for (const file of files) {
     const parts = file.split("/");
@@ -49,6 +49,7 @@ export function validatePackage(directory, profile) {
   }
   const info = JSON.parse(readFileSync(path.join(directory, "frontend/dist/build-info.json"), "utf8"));
   assert.equal(info.profile, profile === "selfhost" ? "host-a1" : "local", "Build pertence ao perfil errado.");
+  if (expectedVersion !== undefined) assert.equal(info.version, expectedVersion, "Build pertence a outra versao; recompile antes de empacotar.");
   if (profile === "local") {
     assert.ok(files.includes("start.cjs"));
     assert.ok(!files.some((file) => file.startsWith("discord-relay/") || file === "deploy.sh"), "Release local nao leva infraestrutura de producao.");

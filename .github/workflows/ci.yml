@@ -31,6 +31,7 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
           cache-dependency-path: package-lock.json
+      - run: npm run check:versions
       - run: npm ci --no-audit --no-fund
       - run: npm run release:packages
       - name: Validate Linux containers

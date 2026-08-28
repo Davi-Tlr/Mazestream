@@ -1,8 +1,10 @@
-# Validação da release 1.0.0
+# Checklist de validação de releases
 
 Estado: candidata em estabilização. Gerar um pacote ou passar no CI não aprova automaticamente a publicação como versão estável.
 
-## Escopo desta rodada
+Confira a versão atual com `npm run check:versions`. Ao preparar uma nova entrega, use os [comandos de versionamento](CI-CD.md#atualizar-a-versão), sem editar números de versão manualmente.
+
+## Escopo da estabilização inicial (histórico da 1.0.0)
 
 - Atualização do LiveKit Client para 2.22.1 e do Vite para 7.3.6, com lockfile único. Node.js 24 LTS é o ambiente recomendado.
 - Testes HTTP independentes de um build prévio, mantendo a verificação dos assets reais no empacotamento.

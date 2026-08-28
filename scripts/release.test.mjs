@@ -68,6 +68,18 @@ test("pacote rejeita build de outro perfil", (t) => {
   const { base } = fixture(t, "host-a1");
   assert.throws(() => validatePackage(base, "local"));
 });
+
+test("pacote rejeita metadados de uma versao anterior", (t) => {
+  const { base, put } = fixture(t);
+  put("frontend/dist/build-info.json", JSON.stringify({ profile: "local", version: "1.2.0" }));
+  assert.throws(() => validatePackage(base, "local", "1.2.1"), /outra versao/);
+  assert.equal(validatePackage(base, "local", "1.2.0").version, "1.2.0");
+});
+
+test("pacote rejeita metadados sem versao", (t) => {
+  const { base } = fixture(t);
+  assert.throws(() => validatePackage(base, "local", "1.2.1"), /outra versao/);
+});
 test("copia normaliza scripts para Linux sem alterar o original", (t) => {
   const { base, put } = fixture(t);
   put("source/run.sh", "#!/bin/sh\r\necho ok\r\n");

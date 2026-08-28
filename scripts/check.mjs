@@ -4,19 +4,18 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { root } from "./build-info.mjs";
 import { parseDocument } from "yaml";
+import { checkVersions, releaseTag } from "./versions.mjs";
 
 const readJson = (file) => JSON.parse(readFileSync(path.join(root, file), "utf8"));
-const pkg = readJson("package.json");
+const pkg = checkVersions(root, { tag: releaseTag() });
 const lock = readJson("package-lock.json");
 assert.equal(pkg.private, true, "O workspace nao deve ser publicado no npm.");
 assert.equal(lock.name, pkg.name);
-assert.equal(lock.version, pkg.version);
 assert.deepEqual(lock.packages[""].devDependencies, pkg.devDependencies);
 assert.deepEqual(lock.packages[""].workspaces, pkg.workspaces);
 for (const workspace of pkg.workspaces) {
   const child = readJson(`${workspace}/package.json`);
   assert.equal(child.private, true);
-  assert.equal(child.version, pkg.version, "Os pacotes fazem parte da mesma versao de release.");
   assert.equal(existsSync(path.join(root, workspace, "package-lock.json")), false, "Use somente o lockfile da raiz.");
   for (const kind of ["dependencies", "devDependencies"]) {
     assert.deepEqual(lock.packages[workspace][kind] || {}, child[kind] || {}, `Lockfile divergente: ${workspace}/${kind}`);

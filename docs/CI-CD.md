@@ -19,11 +19,11 @@ O primeiro estágio é integração contínua com entrega de artefatos. Ainda n�
 
 ### `ci.yml`
 
-Executa em pushes para branches, pull requests e acionamento manual. Valida em Linux e Windows com Node.js 24, gera os dois pacotes e, no Linux, valida Compose e constrói imagens da aplicação/relay. Os artefatos só são enviados pelo job que conclui com sucesso e expiram após sete dias.
+Executa em pushes para branches, pull requests e acionamento manual. Antes de instalar dependências, confere a versão de todos os manifests e das entradas correspondentes do lockfile. Valida em Linux e Windows com Node.js 24, gera os dois pacotes e, no Linux, valida Compose e constrói imagens da aplicação/relay. Os artefatos só são enviados pelo job que conclui com sucesso e expiram após sete dias.
 
 ### `release.yml`
 
-Executa manualmente ou quando você publica uma tag `v*`. Refaz a validação, prepara os pacotes e os disponibiliza como artefatos do workflow por 30 dias. A tag deve coincidir com `version` no `package.json` (por exemplo, `v1.0.0` para `1.0.0`).
+Executa manualmente ou quando você publica uma tag `v*`. Refaz a validação, prepara os pacotes e os disponibiliza como artefatos do workflow por 30 dias. A tag deve coincidir com `version` no `package.json` (por exemplo, `v1.2.1` para `1.2.1`). Essa conferência acontece antes de instalar dependências ou compilar. O empacotamento também rejeita um `build-info.json` de outra versão.
 
 Ele não cria um GitHub Release público, não publica no npm/GHCR e não implanta. Publicar o release visível aos usuários continua sendo uma decisão manual após o teste real de transmissão.
 
@@ -37,14 +37,36 @@ O [checklist de release](RELEASE-CHECKLIST.md) separa os checks automáticos da 
 4. Depois da primeira execução, configure uma regra para `main` exigindo os checks `verify (ubuntu-latest)` e `verify (windows-latest)`. Revise os nomes apresentados na interface antes de salvar a regra.
 5. Faça o teste manual entre dois dispositivos. Só então integre, escolha a versão e prepare uma tag.
 
-Para mudar a versão de todos os pacotes juntos, sem criar commit ou tag automaticamente:
+## Atualizar a versão
+
+O `package.json` da raiz define a versão do produto. Os dois perfis são gerados com essa mesma versão, inclusive nomes dos arquivos, `release.json` e `build-info.json`. Não são versões independentes de local e self-hosted.
+
+Escolha **um** comando de acordo com a mudança, usando [versionamento semântico](https://semver.org/lang/pt-BR/):
+
+| Mudança | Comando | Exemplo partindo de `1.2.1` |
+| --- | --- | --- |
+| Correção compatível | `npm run version:patch` | `1.2.2` |
+| Funcionalidade nova compatível | `npm run version:minor` | `1.3.0` |
+| Mudança incompatível | `npm run version:major` | `2.0.0` |
+
+Para escolher um número exato, inclusive uma candidata:
 
 ```bash
-npm version 1.0.1 --workspaces --include-workspace-root --no-git-tag-version
+npm run version:set -- 1.3.0-rc.1
+```
+
+Esses comandos usam o `npm version` para atualizar os três manifests e o lockfile juntos, sem instalar dependências, acessar a rede, executar hooks de versão, criar commit/tag, enviar push ou publicar. Se o npm falhar ou deixar versões diferentes, os quatro arquivos são restaurados ao conteúdo anterior à tentativa. Versões já divergentes precisam ser revisadas antes do incremento; o comando não escolhe silenciosamente qual delas está correta.
+
+Não é preciso aumentar a versão a cada commit ou push. Faça isso ao preparar uma nova entrega. Uma candidata `-rc.1` não equivale a uma versão estável validada; depois da aprovação, escolha a versão final com `version:set`. Como no npm, `version:patch` em `1.3.0-rc.1` promove para `1.3.0`, não para `1.3.1`.
+
+Para conferir sem alterar arquivos e depois testar:
+
+```bash
+npm run check:versions
 npm run verify
 ```
 
-Revise os três manifests e o lockfile. Commit e tag devem ser feitos por você. Uma versão candidata pode usar sufixo como `1.0.1-rc.1`; isso não equivale a uma versão estável já validada.
+Revise os três manifests e o lockfile no diff. Commit, tag e push continuam sendo feitos por você, depois da validação. Não reutilize ou mova uma tag já publicada: correções de uma versão entregue devem receber outra versão. Os testes da automação rodam em diretórios temporários (`npm run test:versions`), sem alterar a versão do projeto.
 
 ## Segurança e limites
 
@@ -60,6 +82,8 @@ Quando os testes reais estiverem confiáveis, a próxima etapa pode ser publica�
 
 ## Referências oficiais
 
+- [Versionamento de workspaces com npm](https://docs.npmjs.com/cli/v11/commands/npm-version/)
+- [Versionamento Semântico](https://semver.org/lang/pt-BR/)
 - [Instalação determinística com npm ci](https://docs.npmjs.com/cli/v11/commands/npm-ci/)
 - [Uso seguro do GitHub Actions](https://docs.github.com/en/actions/reference/security/secure-use)
 - [Artefatos de workflows](https://docs.github.com/en/actions/how-tos/writing-workflows/choosing-what-your-workflow-does/storing-and-sharing-data-from-a-workflow)

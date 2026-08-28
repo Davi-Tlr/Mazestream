@@ -1,18 +1,17 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { root } from "./build-info.mjs";
 import { copyAllowed, sha256, thirdPartyNotices, validatePackage, writeChecksums } from "./release-lib.mjs";
 import { smokePackage } from "./smoke-package.mjs";
+import { checkVersions, releaseTag } from "./versions.mjs";
 
 const selection = process.argv[2] || "all";
 assert.ok(["all", "local", "selfhost"].includes(selection), "Use local, selfhost ou all.");
 assert.ok(process.env.npm_execpath, "Execute por npm run release:packages.");
 const npm = (...args) => execFileSync(process.execPath, [process.env.npm_execpath, ...args], { cwd: root, stdio: "inherit" });
-const pkg = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
-assert.match(pkg.version, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
-if (process.env.GITHUB_REF_TYPE === "tag") assert.equal(process.env.GITHUB_REF_NAME, `v${pkg.version}`, "Tag e versao do package.json divergem.");
+const pkg = checkVersions(root, { tag: releaseTag() });
 const profiles = selection === "all" ? ["local", "selfhost"] : [selection];
 const artifacts = path.join(root, "artifacts");
 mkdirSync(artifacts, { recursive: true });
@@ -43,7 +42,7 @@ for (const profile of profiles) {
     copyAllowed(root, stage, "frontend/Dockerfile.runtime", "frontend/Dockerfile");
     copyAllowed(root, stage, "packaging/README.selfhost.md", "README.md");
   }
-  const info = validatePackage(stage, profile);
+  const info = validatePackage(stage, profile, pkg.version);
   writeFileSync(path.join(stage, "release.json"), JSON.stringify({ ...info, distribution: profile, node: process.version }, null, 2) + "\n");
   writeFileSync(path.join(stage, "THIRD_PARTY_NOTICES.txt"), thirdPartyNotices(root));
   writeChecksums(stage);
