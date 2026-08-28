@@ -1,7 +1,6 @@
 {
   "name": "@mazestream/web",
   "private": true,
-  "version": "1.0.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,7 +9,7 @@
     "build": "vite build && node scripts/precompress.cjs",
     "build:host": "vite build --mode host-a1 && node scripts/precompress.cjs",
     "build:local": "vite build --mode local-preview && node scripts/precompress.cjs",
-    "test": "node --test src/*.test.js server.integration.test.cjs",
+    "test": "node --test src/tests/*.test.js server.integration.test.cjs",
     "preview": "vite preview",
     "dev:host": "vite --mode host-a1",
     "dev:local": "vite --mode local-preview"
