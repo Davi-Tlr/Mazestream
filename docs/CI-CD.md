@@ -23,7 +23,7 @@ Executa em pushes para branches, pull requests e acionamento manual. Antes de in
 
 ### `release.yml`
 
-Executa manualmente ou quando você publica uma tag `v*`. Refaz a validação, prepara os pacotes e os disponibiliza como artefatos do workflow por 30 dias. A tag deve coincidir com `version` no `package.json` (por exemplo, `v1.2.1` para `1.2.1`). Essa conferência acontece antes de instalar dependências ou compilar. O empacotamento também rejeita um `build-info.json` de outra versão.
+Executa manualmente ou quando você publica uma tag `v*`. Refaz a validação, prepara os pacotes e os disponibiliza como artefatos do workflow por 30 dias. A tag deve coincidir com a versão em [versions.js](../versions.js) (por exemplo, `v1.2.1` para `1.2.1`). Essa conferência acontece antes de instalar dependências ou compilar. O empacotamento também rejeita um `build-info.json` de outra versão.
 
 Ele não cria um GitHub Release público, não publica no npm/GHCR e não implanta. Publicar o release visível aos usuários continua sendo uma decisão manual após o teste real de transmissão.
 
@@ -39,7 +39,7 @@ O [checklist de release](RELEASE-CHECKLIST.md) separa os checks automáticos da 
 
 ## Atualizar a versão
 
-O `package.json` da raiz define a versão do produto. Os dois perfis são gerados com essa mesma versão, inclusive nomes dos arquivos, `release.json` e `build-info.json`. Não são versões independentes de local e self-hosted.
+O [versions.js](../versions.js) na raiz define a versão do produto — é a **única** declaração literal. Os `package.json`, o `package-lock.json` e o `build-info.json` **não declaram** `version` própria; a versão é lida do `versions.js` e embutida nos artefatos no build/empacotamento. Os dois perfis são gerados com essa mesma versão, inclusive nomes dos arquivos e `release.json`. Não são versões independentes de local e self-hosted.
 
 Escolha **um** comando de acordo com a mudança, usando [versionamento semântico](https://semver.org/lang/pt-BR/):
 
@@ -55,9 +55,9 @@ Para escolher um número exato, inclusive uma candidata:
 npm run version:set -- 1.3.0-rc.1
 ```
 
-Esses comandos usam o `npm version` para atualizar os três manifests e o lockfile juntos, sem instalar dependências, acessar a rede, executar hooks de versão, criar commit/tag, enviar push ou publicar. Se o npm falhar ou deixar versões diferentes, os quatro arquivos são restaurados ao conteúdo anterior à tentativa. Versões já divergentes precisam ser revisadas antes do incremento; o comando não escolhe silenciosamente qual delas está correta.
+Esses comandos reescrevem **somente** `versions.js`, com a mesma semântica SemVer do npm (inclusive `version:patch` em `1.3.0-rc.1` promovendo para `1.3.0`). Não tocam os manifests, o lockfile, não instalam dependências, não acessam a rede, não executam hooks e não criam commit, tag, push ou publicação. `npm run check:versions` garante que nenhum manifest ou lockfile declare `version` própria — a versão vive apenas no `versions.js`.
 
-Não é preciso aumentar a versão a cada commit ou push. Faça isso ao preparar uma nova entrega. Uma candidata `-rc.1` não equivale a uma versão estável validada; depois da aprovação, escolha a versão final com `version:set`. Como no npm, `version:patch` em `1.3.0-rc.1` promove para `1.3.0`, não para `1.3.1`.
+Não é preciso aumentar a versão a cada commit ou push. Faça isso ao preparar uma nova entrega. Uma candidata `-rc.1` não equivale a uma versão estável validada; depois da aprovação, escolha a versão final com `version:set`.
 
 Para conferir sem alterar arquivos e depois testar:
 

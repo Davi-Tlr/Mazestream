@@ -7,6 +7,7 @@ COPY discord-relay/package.json ./discord-relay/package.json
 RUN npm ci
 COPY frontend ./frontend
 COPY scripts/build-info.mjs ./scripts/build-info.mjs
+COPY versions.js ./versions.js
 ARG MAZESTREAM_BUILD_PROFILE=host
 ARG MAZESTREAM_REVISION=unknown
 ENV MAZESTREAM_REVISION=$MAZESTREAM_REVISION
