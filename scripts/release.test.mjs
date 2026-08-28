@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { parseDocument } from "yaml";
 import { root } from "./build-info.mjs";
 import { copyAllowed, safePath, validatePackage, writeChecksums } from "./release-lib.mjs";
-import { resolveAppProfile } from "../frontend/src/appProfile.js";
+import { resolveAppProfile } from "../frontend/src/config/appProfile.js";
 
 function fixture(t, profile = "local") {
   const base = mkdtempSync(path.join(tmpdir(), "mazestream-release-test-"));
