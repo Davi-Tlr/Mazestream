@@ -93,7 +93,7 @@ permanentes por distribuicao nem duplique correcoes entre elas.
 
 Os arquivos que definem a diferenca sao:
 
-- `frontend/src/appProfile.js`;
+- `frontend/src/config/appProfile.js`;
 - `frontend/.env.local-preview`;
 - `frontend/.env.host-a1`;
 - `docker-compose.host-a1.yaml`;
