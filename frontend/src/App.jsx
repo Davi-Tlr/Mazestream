@@ -656,22 +656,26 @@ export default function App() {
   const clipTarget = selectedTile && selectedTile.isScreen ? selectedTile : tiles.find((tile) => tile.isScreen) || null;
   const [clipBufferTarget, setClipBufferTarget] = useState("");
   const clipEnabled = !!clipTarget && clipBufferTarget === clipTarget.key;
-  const clipBuffer = useClipBuffer(room, clipTarget, 45, clipEnabled);
+  const onClipAutoStop = useCallback(() => {
+    setClipBufferTarget("");
+    message.warning("O clipe foi desligado após alguns minutos para manter o dispositivo leve.", 6);
+  }, [message]);
+  const clipBuffer = useClipBuffer(room, clipTarget, 45, clipEnabled, onClipAutoStop);
   const toggleClipBuffer = useCallback(() => {
     if (!clipTarget) return;
     setClipBufferTarget((current) => current === clipTarget.key ? "" : clipTarget.key);
   }, [clipTarget]);
   const saveClip = useCallback(async (seconds) => {
-    if (!clipBuffer.supported) { message.warning("Seu navegador não suporta clipes locais."); return; }
-    message.open({ key: "maze-clip", type: "loading", content: "Montando um WebM válido…", duration: 0 });
+    if (!clipBuffer.supported) { message.warning("Este dispositivo não consegue criar clipes agora."); return; }
+    message.open({ key: "maze-clip", type: "loading", content: "Preparando o clipe…", duration: 0 });
     try {
       if (!await clipBuffer.saveClip(seconds)) {
-        message.open({ key: "maze-clip", type: "info", content: "O buffer ainda não tem tempo suficiente para esse clipe." });
+        message.open({ key: "maze-clip", type: "info", content: "O clipe ainda não tem tempo suficiente." });
         return;
       }
       message.open({ key: "maze-clip", type: "success", content: "Clipe salvo no seu dispositivo." });
     } catch (error) {
-      message.open({ key: "maze-clip", type: "error", content: error?.message || "Não consegui montar o clipe." });
+      message.open({ key: "maze-clip", type: "error", content: "Não consegui salvar o clipe. Desative e ative novamente para tentar." });
     }
   }, [clipBuffer, message]);
 

@@ -13,7 +13,7 @@ function waitForClipStep(promise, signal) {
 function requireDecoderMetadata(entry, cached, label) {
   const meta = entry?.meta?.decoderConfig ? entry.meta : cached;
   if (!meta?.decoderConfig) {
-    throw new Error(`O buffer do clipe não recebeu a configuração de ${label}. Desative e reative os clipes para tentar novamente.`);
+    throw new Error(`Não consegui preparar o ${label} do clipe. Desative e ative novamente para tentar.`);
   }
   return meta;
 }
@@ -65,7 +65,7 @@ export async function muxClip(runtime, selection, signal) {
     const mimeType = await wait(output.getMimeType());
     await wait(output.finalize());
     signal.throwIfAborted();
-    if (!target.buffer) throw new Error("O navegador não finalizou o arquivo do clipe.");
+    if (!target.buffer) throw new Error("O clipe não terminou de ser preparado.");
     return new Blob([target.buffer], { type: mimeType || "video/webm" });
   } catch (error) {
     if (!["canceled", "finalized"].includes(output.state)) cancel();

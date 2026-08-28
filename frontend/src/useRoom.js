@@ -75,7 +75,7 @@ export function useRoom() {
       .on(RoomEvent.ParticipantNameChanged, onMeta)
       .on(RoomEvent.ConnectionQualityChanged, () => { if (isCurrent()) incQuality(); })
       .on(RoomEvent.ParticipantPermissionsChanged, () => { if (isCurrent()) incPermission(); })
-      .on(RoomEvent.TrackSubscriptionFailed, () => reportError("Não consegui receber uma das faixas da transmissão."))
+      .on(RoomEvent.TrackSubscriptionFailed, () => reportError("Não consegui receber uma parte da transmissão."))
       .on(RoomEvent.MediaDevicesError, (error) => reportError(error?.message || "O navegador perdeu acesso ao microfone ou à câmera."))
       .on(RoomEvent.AudioPlaybackStatusChanged, () => {
         if (isCurrent()) setAudioBlocked(!room.canPlaybackAudio);

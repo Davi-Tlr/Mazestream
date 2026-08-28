@@ -4,6 +4,10 @@ import { muxClip } from "./clipMux.js";
 import { appendClipPacket, bufferedPacketBytes, getBufferedSeconds, pruneRollingPackets, selectClipEntries } from "./clipBufferCore.js";
 import { chooseScreenAudioPublication } from "./clipTrackSelection.js";
 
+const CLIP_VIDEO_BITRATE = 2_500_000;
+const CLIP_FRAME_RATE = 15;
+const CLIP_MAX_ACTIVE_MS = 10 * 60 * 1000;
+
 let mediaModulePromise = null;
 function loadMediaModule() {
   if (!mediaModulePromise) mediaModulePromise = import("./clipMedia.js").catch((error) => {
@@ -37,9 +41,11 @@ function downloadBlob(blob) {
   window.setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
-export function useClipBuffer(room, tile, maxSeconds = 45, enabled = false) {
+export function useClipBuffer(room, tile, maxSeconds = 45, enabled = false, onAutoStop = null) {
   const runtimeRef = useRef(null);
   const exportingRef = useRef(false);
+  const onAutoStopRef = useRef(onAutoStop);
+  onAutoStopRef.current = onAutoStop;
   const [supported, setSupported] = useState(false);
   const [buffering, setBuffering] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -56,6 +62,10 @@ export function useClipBuffer(room, tile, maxSeconds = 45, enabled = false) {
     const stopRuntime = (runtime) => {
       if (!runtime) return;
       runtime.failed = true;
+      if (runtime.autoStopTimer) {
+        window.clearTimeout(runtime.autoStopTimer);
+        runtime.autoStopTimer = null;
+      }
       runtime.exportController?.abort();
       try { runtime.videoSource?.close(); } catch (e) {}
       try { runtime.audioSource?.close(); } catch (e) {}
@@ -86,10 +96,11 @@ export function useClipBuffer(room, tile, maxSeconds = 45, enabled = false) {
           NullTarget, Output, Quality, WebMOutputFormat
         } = media;
         const settings = videoTrack.getSettings ? videoTrack.getSettings() : {};
-        const videoCodec = await getFirstEncodableVideoCodec(["vp9", "vp8"], {
-          width: settings.width || 1280,
+        const clipWidth = Math.min(1280, Number(settings.width) || 1280);
+        const videoCodec = await getFirstEncodableVideoCodec(["vp8", "vp9"], {
+          width: clipWidth,
           height: settings.height || 720,
-          bitrate: new Quality({ bitrate: 4_000_000 })
+          bitrate: new Quality({ bitrate: CLIP_VIDEO_BITRATE })
         });
         if (!videoCodec) throw new Error("Este navegador não consegue codificar VP8/VP9 para clipes.");
 
@@ -115,13 +126,14 @@ export function useClipBuffer(room, tile, maxSeconds = 45, enabled = false) {
           bufferedBytes: 0,
           readyWholeSeconds: 0,
           lastPrunedTimestamp: -Infinity,
+          autoStopTimer: null,
           failed: false
         };
-        const onPacketError = (caught) => {
+        const onPacketError = () => {
           if (disposed) return;
           if (runtime.failed) return;
           runtime.failed = true;
-          setError(caught instanceof Error ? caught.message : "A gravação local do clipe falhou.");
+          setError("O clipe não pôde continuar neste dispositivo. Desative e ative novamente para tentar.");
           setBuffering(false);
           setSupported(false);
           if (runtimeRef.current === runtime) {
@@ -152,17 +164,21 @@ export function useClipBuffer(room, tile, maxSeconds = 45, enabled = false) {
         });
         const videoSource = new MediaStreamVideoTrackSource(videoTrack, {
           codec: videoCodec,
-          quality: new Quality({ bitrate: 4_000_000 }),
-          keyFrameInterval: 1,
+          quality: new Quality({ bitrate: CLIP_VIDEO_BITRATE }),
+          keyFrameInterval: 2,
           sizeChangeBehavior: "contain",
+          transform: { width: clipWidth },
           onEncodedPacket: (packet, meta) => {
             if (disposed || runtime.failed) return;
             try { appendClipPacket(runtime, "video", packet, meta); }
-            catch (error) { onPacketError(error); return; }
+            catch (error) { onPacketError(); return; }
             runtime.latest = Math.max(runtime.latest, packet.timestamp + packet.duration);
             updateRing();
           }
-        }, { frameRate: Math.min(30, settings.frameRate || 30) });
+        // Sample at a modest rate before resizing/encoding. This keeps the
+        // rolling clip useful while avoiding a second encode for every live
+        // frame on machines with limited CPU.
+        }, { frameRate: CLIP_FRAME_RATE });
         output.addVideoTrack(videoSource);
         videoSource.errorPromise.catch(onPacketError);
 
@@ -174,7 +190,7 @@ export function useClipBuffer(room, tile, maxSeconds = 45, enabled = false) {
             onEncodedPacket: (packet, meta) => {
               if (disposed || runtime.failed) return;
               try { appendClipPacket(runtime, "audio", packet, meta); }
-              catch (error) { onPacketError(error); }
+            catch (error) { onPacketError(); }
             }
           });
           output.addAudioTrack(audioSource);
@@ -187,16 +203,25 @@ export function useClipBuffer(room, tile, maxSeconds = 45, enabled = false) {
         runtimeRef.current = runtime;
         await output.start();
         if (disposed || runtime.failed) { stopRuntime(runtime); return; }
+        runtime.autoStopTimer = window.setTimeout(() => {
+          if (disposed || runtimeRef.current !== runtime || runtime.failed) return;
+          runtimeRef.current = null;
+          stopRuntime(runtime);
+          setSupported(false);
+          setBuffering(false);
+          setReadySeconds(0);
+          onAutoStopRef.current?.();
+        }, CLIP_MAX_ACTIVE_MS);
         setSupported(true);
         setBuffering(true);
-      } catch (caught) {
+      } catch {
         if (disposed) return;
         const runtime = runtimeRef.current;
         runtimeRef.current = null;
         stopRuntime(runtime);
         setSupported(false);
         setBuffering(false);
-        setError(caught instanceof Error ? caught.message : "Não consegui iniciar o buffer de clipes.");
+        setError("Não consegui iniciar o clipe. Desative e ative novamente para tentar.");
       }
     })();
 

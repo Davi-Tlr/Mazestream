@@ -45,7 +45,7 @@ export function useScreenShare(room, settings, updateMeta, notifications) {
       let metadataOk = true;
       if (!anyScreenActive) metadataOk = await updateMeta({ estado: "off", desde: 0 });
       if (failed || targetStillActive) {
-        notifications?.error("Não consegui encerrar todas as faixas desta transmissão. Confira o indicador ao vivo antes de fechar a página.");
+        notifications?.error("Não consegui encerrar toda a transmissão. Confira o indicador ao vivo antes de fechar a página.");
         return false;
       }
       if (!metadataOk) {
@@ -111,7 +111,7 @@ export function useScreenShare(room, settings, updateMeta, notifications) {
 
       const videoTrack = stream.getVideoTracks()[0];
       const audioTrack = stream.getAudioTracks()[0];
-      if (!videoTrack) throw new Error("O navegador não entregou uma faixa de vídeo para compartilhar.");
+      if (!videoTrack) throw new Error("O navegador não entregou um vídeo para compartilhar.");
       const videoSettings = videoTrack.getSettings ? videoTrack.getSettings() : {};
       const surface = videoSettings.displaySurface || "";
       if (APP_PROFILE.diagnostics) {
@@ -162,10 +162,10 @@ export function useScreenShare(room, settings, updateMeta, notifications) {
       const actualWidth = Number(videoSettings.width) || preset.w;
       const actualHeight = Number(videoSettings.height) || preset.h;
       const actualFps = Math.round(Number(videoSettings.frameRate) || preset.fps);
-      const mode = contentHint === "detail" ? "detalhes" : "movimento";
-      notifications?.success("Transmitindo em " + actualWidth + "×" + actualHeight + " · " + actualFps + "fps · " + videoCodec.toUpperCase() + " · " + mode, 4);
+      const mode = contentHint === "detail" ? "mais nitidez" : "mais fluidez";
+      notifications?.success("Transmissão iniciada · " + mode, 4);
       if (settings.sendQuality === "high" && (actualWidth < 1800 || actualHeight < 1000 || actualFps < 25)) {
-        notifications?.info("O navegador entregou menos que 1080p30. Tela inteira ou janela maximizada costuma preservar mais resolução.", 7);
+        notifications?.info("A qualidade foi ajustada para manter a transmissão estável. Compartilhar uma janela maximizada costuma ajudar.", 7);
       }
       return true;
     } catch (error) {
@@ -196,7 +196,7 @@ export function useScreenShare(room, settings, updateMeta, notifications) {
       )));
       const remaining = activeScreenPublications(room);
       if (results.some((result) => result.status === "rejected") || remaining.length > 0) {
-        notifications?.error("Alguma faixa não foi encerrada. Não feche a página até o indicador de transmissão desaparecer.");
+        notifications?.error("A transmissão não foi encerrada por completo. Não feche a página até o indicador desaparecer.");
         return false;
       }
       if (!await updateMeta({ estado: "off", desde: 0 })) {
@@ -219,12 +219,12 @@ export function useScreenShare(room, settings, updateMeta, notifications) {
       const stillActive = activeScreenPublications(room).length > 0;
       if (!stillActive) await updateMeta({ estado: "off", desde: 0 });
       notifications?.error(stillActive || stopped.some((result) => result.status === "rejected")
-        ? "Falha ao pausar: alguma faixa pode continuar ativa. Use Parar transmissão."
+        ? "Falha ao pausar: uma parte da transmissão pode continuar ativa. Use Parar transmissão."
         : "Falha ao pausar; a transmissão foi encerrada por segurança.");
       return false;
     }
     if (!await updateMeta({ estado: "pausado" })) {
-      notifications?.warning("As faixas foram pausadas, mas o estado da sala não sincronizou.");
+      notifications?.warning("A transmissão foi pausada, mas o estado da sala não sincronizou.");
     }
     return true;
   }, [room, updateMeta, notifications]);
@@ -235,7 +235,7 @@ export function useScreenShare(room, settings, updateMeta, notifications) {
     const results = await Promise.allSettled(targets.map((publication) => publication.track.unmute()));
     if (results.some((result) => result.status === "rejected")) {
       await Promise.allSettled(targets.map((publication) => publication.track.mute()));
-      notifications?.error("Não consegui retomar todas as faixas. A transmissão continua pausada.");
+      notifications?.error("Não consegui retomar a transmissão completa. Ela continua pausada.");
       return false;
     }
     const state = readState(room.localParticipant);

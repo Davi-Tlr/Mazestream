@@ -33,13 +33,13 @@ test("the encoded buffer refuses bytes above its budget before cloning", () => {
   const runtime = { video: [], audio: [], bufferedBytes: MAX_CLIP_BUFFER_BYTES - 5, order: 0 };
   assert.throws(() => appendClipPacket(runtime, "video", {
     byteLength: 6, clone() { assert.fail("oversized packet must not be cloned"); }
-  }), /limite de memória/);
+  }), /clipe ficou longo demais/);
   assert.equal(runtime.video.length, 0);
 });
 
 test("small packets cannot grow metadata without bound", () => {
   const runtime = { video: Array(MAX_CLIP_PACKETS).fill({}), audio: [], bufferedBytes: 1, order: 0 };
-  assert.throws(() => appendClipPacket(runtime, "audio", { byteLength: 1 }), /limite de memória/);
+  assert.throws(() => appendClipPacket(runtime, "audio", { byteLength: 1 }), /clipe ficou longo demais/);
 });
 
 test("audio, video and alpha bytes share one budget and pruning releases capacity", () => {

@@ -559,21 +559,22 @@ export default function RoomView(props) {
               <div className="clip-meta">{clipTargetName || "Nenhuma transmissão"}</div>
               {!clipEnabled ? (
                 <>
-                  <span className="clip-note">Grava continuamente no seu navegador enquanto estiver ativo. Usa CPU/GPU local; o consumo varia conforme o dispositivo.</span>
-                  <Button block size="small" type="primary" onClick={onToggleClipBuffer}>Ativar buffer para esta tela</Button>
+                  <span className="clip-note clip-warning" role="note">Prepara os últimos segundos da transmissão para você salvar um clipe de 15 ou 30 segundos. Pode consumir muita CPU; deixe ativado só enquanto precisar.</span>
+                  <Button block size="small" type="primary" onClick={onToggleClipBuffer}>Ativar clipe</Button>
                 </>
               ) : (
                 <>
                   <div className="clip-meta">{clipBuffering
-                    ? Math.min(45, clipReadySeconds) + "s disponíveis"
-                    : (clipError ? "indisponível" : "preparando buffer")}</div>
+                    ? "Clipe ativo · últimos " + Math.min(45, clipReadySeconds) + " segundos"
+                    : (clipError ? "indisponível" : "Preparando o clipe…")}</div>
                   <Button block size="small" loading={clipExporting} disabled={!clipBuffering || clipReadySeconds < 15 || clipExporting}
                     onClick={() => onSaveClip(15)}>Salvar últimos 15s</Button>
                   <Button block size="small" loading={clipExporting} disabled={!clipBuffering || clipReadySeconds < 30 || clipExporting}
                     onClick={() => onSaveClip(30)}>Salvar últimos 30s</Button>
-                  <Button block size="small" onClick={onToggleClipBuffer}>Desligar buffer</Button>
+                  <span className="clip-note clip-warning" role="note">Este clipe está sendo preparado no seu dispositivo e pode consumir muita CPU. Desative quando terminar; ele também será desligado automaticamente após alguns minutos.</span>
+                  <Button block size="small" onClick={onToggleClipBuffer}>Desligar clipe</Button>
                   {clipError && <span className="clip-note clip-error">{clipError}</span>}
-                  {!clipSupported && !clipError && <span className="clip-note">Verificando o codificador do navegador…</span>}
+                  {!clipSupported && !clipError && <span className="clip-note">Preparando o clipe…</span>}
                 </>
               )}
             </div>
@@ -739,7 +740,7 @@ export default function RoomView(props) {
             </div>
           );
         })}
-        <p className="drawer-note">Silenciar o microfone ou esconder a câmera de alguém cancela a inscrição daquela faixa, reduzindo o tráfego recebido. Votekick exige maioria, expira em 90 segundos e nunca vira ban permanente.</p>
+        <p className="drawer-note">Silenciar o microfone ou esconder a câmera de alguém desliga o recebimento daquela transmissão, reduzindo o tráfego. Votekick exige maioria, expira em 90 segundos e nunca vira ban permanente.</p>
       </Drawer>
 
       <Drawer title="Chat da sala" placement="right" open={chatOpen} onClose={() => setChatOpen(false)} width={390}>

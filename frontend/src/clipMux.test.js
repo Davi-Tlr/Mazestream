@@ -93,7 +93,7 @@ for (const [kind, label] of [["video", "vídeo"], ["audio", "áudio"]]) {
     const { runtime, selection, output } = fixture();
     runtime[`${kind}Meta`] = null;
     selection[kind][0].meta = {};
-    await assert.rejects(muxClip(runtime, selection, new AbortController().signal), new RegExp(`configuração de ${label}`));
+    await assert.rejects(muxClip(runtime, selection, new AbortController().signal), new RegExp(`preparar o ${label}`));
     assert.equal(output().state, "canceled");
   });
 }

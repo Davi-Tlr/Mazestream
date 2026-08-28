@@ -1,18 +1,14 @@
 import { APP_PROFILE } from "./appProfile.js";
 
-function mbpsLabel(bitrate) {
-  return (bitrate / 1_000_000).toLocaleString("pt-BR", { maximumFractionDigits: 1 }) + " Mbps";
-}
-
 export const SEND_PRESETS = {
-  high:   { w: 1920, h: 1080, fps: 30, br: APP_PROFILE.screenBitrates.high, label: "1080p30" },
-  medium: { w: 1280, h: 720,  fps: 30, br: APP_PROFILE.screenBitrates.medium, label: "720p30" },
-  low:    { w: 960,  h: 540,  fps: 30, br: APP_PROFILE.screenBitrates.low, label: "540p30" }
+  high:   { w: 1920, h: 1080, fps: 30, br: APP_PROFILE.screenBitrates.high, label: "Mais qualidade" },
+  medium: { w: 1280, h: 720,  fps: 30, br: APP_PROFILE.screenBitrates.medium, label: "Equilibrada" },
+  low:    { w: 960,  h: 540,  fps: 30, br: APP_PROFILE.screenBitrates.low, label: "Mais leve" }
 };
 
 export const SEND_OPTIONS = Object.entries(SEND_PRESETS).map(([value, preset]) => ({
   value,
-  label: preset.label + " · até " + mbpsLabel(preset.br)
+  label: preset.label
 }));
 
 export const CONTENT_OPTIONS = [

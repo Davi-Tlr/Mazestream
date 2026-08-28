@@ -11,7 +11,7 @@ export function appendClipPacket(runtime, kind, packet, meta) {
   const bytes = clipPacketBytes(packet);
   if (runtime.bufferedBytes + bytes > MAX_CLIP_BUFFER_BYTES
       || runtime.video.length + runtime.audio.length >= MAX_CLIP_PACKETS) {
-    throw new Error("O buffer de clipes atingiu o limite de memória. Desative e reative os clipes para tentar novamente.");
+    throw new Error("Este clipe ficou longo demais para o dispositivo. Desative e ative novamente para tentar.");
   }
   // WebCodecs emits decoderConfig only when needed; later metadata may be {}.
   // Keep an owned snapshot with each packet so pruning or a newer config cannot

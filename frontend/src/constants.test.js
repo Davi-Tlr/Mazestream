@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { CONTENT_OPTIONS, DEFAULT_SETTINGS, SEND_PRESETS } from "./constants.js";
+import { CONTENT_OPTIONS, DEFAULT_SETTINGS, SEND_OPTIONS, SEND_PRESETS } from "./constants.js";
 import { resolveAppProfile } from "./appProfile.js";
 
 test("a transmissão padrão é 1080p a 30fps", () => {
@@ -17,6 +17,11 @@ test("a transmissão padrão é 1080p a 30fps", () => {
 test("há perfis separados para movimento e detalhes", () => {
   assert.deepEqual(CONTENT_OPTIONS.map((option) => option.value), ["motion", "detail"]);
   assert.equal(DEFAULT_SETTINGS.shareContent, "motion");
+});
+
+test("as opções de transmissão usam linguagem simples na interface", () => {
+  assert.deepEqual(SEND_OPTIONS.map((option) => option.label), ["Mais qualidade", "Equilibrada", "Mais leve"]);
+  assert.ok(SEND_OPTIONS.every((option) => !/Mbps|kbps|fps|1080p|720p|540p|VP[89]/i.test(option.label)));
 });
 
 test("o perfil do Oracle preserva 1080p30 com teto de banda menor", () => {

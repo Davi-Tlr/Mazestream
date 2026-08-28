@@ -386,6 +386,14 @@
   font-size: 10px;
   line-height: 1.4;
 }
+.clip-warning {
+  display: block;
+  padding: 7px 8px;
+  border: 1px solid color-mix(in srgb, var(--warning) 55%, var(--line-soft));
+  border-radius: 6px;
+  color: var(--warning);
+  background: var(--warning-bg);
+}
 .toolbar-more-menu {
   display: grid;
   gap: 3px;
