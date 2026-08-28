@@ -179,7 +179,7 @@ No pacote self-hosted, o frontend já está compilado. O servidor executa a apli
 | Infraestrutura | Docker Compose e Redis | Execução dos serviços no ambiente hospedado |
 | Build e validação | Vite, npm workspaces e GitHub Actions | Compilação, testes e empacotamento |
 
-As versões utilizadas estão registradas nos [manifests do workspace](package.json), no [manifest da aplicação](frontend/package.json), no [lockfile](package-lock.json) e no [Docker Compose](docker-compose.yaml).
+A versão do produto fica **somente** no [versions.js](versions.js) — fonte única. Os `package.json` e o `package-lock.json` **não declaram** `version`; o `scripts/versions.mjs` valida isso e os comandos `npm run version:*` reescrevem apenas esse arquivo.
 
 ---
 

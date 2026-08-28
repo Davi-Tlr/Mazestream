@@ -1,6 +1,5 @@
 {
   "name": "@mazestream/discord-relay",
-  "version": "1.0.1",
   "private": true,
   "type": "commonjs",
   "description": "Eventos e monitoramento de banda do LiveKit para o Discord.",

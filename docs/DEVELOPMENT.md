@@ -3,6 +3,7 @@
 ## Estrutura
 
 ```text
+versions.js                         fonte única da versão do produto
 package.json / package-lock.json   comandos e dependências do workspace
 frontend/                         @mazestream/web: React/Vite e API Node
 discord-relay/                    @mazestream/discord-relay: integração opcional
